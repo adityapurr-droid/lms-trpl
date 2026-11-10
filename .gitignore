@@ -1,0 +1,13 @@
+# Uploads & User Files
+uploads/*
+!uploads/.gitkeep
+
+# Environment & Config
+.env
+*.log
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
