@@ -68,6 +68,185 @@ function validateScore($score) {
     return (float)$score;
 }
 
+// Format jadwal dari data nyata. Tidak pernah mengarang hari/jam;
+// mengembalikan null bila jadwal belum lengkap.
+function formatJadwalServer($hari, $jam) {
+    $hari = trim((string)($hari ?? ''));
+    $jam = trim((string)($jam ?? ''));
+    if ($hari === '' || $jam === '') {
+        return null;
+    }
+    return "{$hari}, {$jam} WIB";
+}
+
+// Daftar hari yang valid (selaras dengan HARI_LIST di frontend).
+function jadwalHariValid($hari) {
+    static $valid = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    return in_array(trim((string)$hari), $valid, true);
+}
+
+// Normalisasi nilai jam menjadi "HH:MM" 24 jam. Null bila kosong/tidak valid.
+function normalizeJam($value) {
+    $value = trim((string)($value ?? ''));
+    if ($value === '') {
+        return null;
+    }
+    if (!preg_match('/^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/', $value, $m)) {
+        return null;
+    }
+    return sprintf('%02d:%02d', (int)$m[1], (int)$m[2]);
+}
+
+// Pecah rentang jam legacy menjadi [mulai, selesai] format "HH:MM".
+function parseJamRange($jam) {
+    $jam = trim((string)($jam ?? ''));
+    if ($jam === '') {
+        return [null, null];
+    }
+    if (preg_match('/([01]?\d|2[0-3]):([0-5]\d)\s*[-\x{2013}\x{2014}]\s*([01]?\d|2[0-3]):([0-5]\d)/u', $jam, $m)) {
+        return [
+            sprintf('%02d:%02d', (int)$m[1], (int)$m[2]),
+            sprintf('%02d:%02d', (int)$m[3], (int)$m[4]),
+        ];
+    }
+    return [null, null];
+}
+
+function jamKeMenit($jam) {
+    $normal = normalizeJam($jam);
+    if ($normal === null) {
+        return null;
+    }
+    [$h, $i] = array_map('intval', explode(':', $normal));
+    return ($h * 60) + $i;
+}
+
+// Susun jadwal dari input terstruktur (utama) atau string legacy (kompatibilitas).
+// Mengembalikan ['jam_mulai'=>?, 'jam_selesai'=>?, 'jam'=>?] tanpa mengarang nilai.
+function resolveJadwalInput(array $input) {
+    $jamMulaiProvided   = array_key_exists('jam_mulai', $input);
+    $jamSelesaiProvided = array_key_exists('jam_selesai', $input);
+
+    if ($jamMulaiProvided || $jamSelesaiProvided) {
+        $mulai   = normalizeJam($input['jam_mulai'] ?? null);
+        $selesai = normalizeJam($input['jam_selesai'] ?? null);
+
+        $mulaiEmpty   = trim((string)($input['jam_mulai'] ?? '')) === '';
+        $selesaiEmpty = trim((string)($input['jam_selesai'] ?? '')) === '';
+
+        if ($mulaiEmpty && $selesaiEmpty) {
+            return ['jam_mulai' => null, 'jam_selesai' => null, 'jam' => null, 'provided' => true];
+        }
+        if ($mulai === null || $selesai === null) {
+            jsonRes(['success' => false, 'message' => 'Format jam tidak valid. Gunakan format HH:MM (contoh 08:00).'], 400);
+        }
+        if (jamKeMenit($selesai) <= jamKeMenit($mulai)) {
+            jsonRes(['success' => false, 'message' => 'Jam selesai harus setelah jam mulai.'], 400);
+        }
+        return ['jam_mulai' => $mulai, 'jam_selesai' => $selesai, 'jam' => "{$mulai} - {$selesai}", 'provided' => true];
+    }
+
+    if (array_key_exists('jam', $input)) {
+        $jam = trim((string)($input['jam'] ?? ''));
+        if ($jam === '') {
+            return ['jam_mulai' => null, 'jam_selesai' => null, 'jam' => null, 'provided' => true];
+        }
+        [$mulai, $selesai] = parseJamRange($jam);
+        if ($mulai === null || $selesai === null) {
+            jsonRes(['success' => false, 'message' => 'Format jam tidak valid. Gunakan format "HH:MM - HH:MM" (contoh 08:00 - 10:30).'], 400);
+        }
+        if (jamKeMenit($selesai) <= jamKeMenit($mulai)) {
+            jsonRes(['success' => false, 'message' => 'Jam selesai harus setelah jam mulai.'], 400);
+        }
+        return ['jam_mulai' => $mulai, 'jam_selesai' => $selesai, 'jam' => "{$mulai} - {$selesai}", 'provided' => true];
+    }
+
+    return ['jam_mulai' => null, 'jam_selesai' => null, 'jam' => null, 'provided' => false];
+}
+
+// Cari bentrok jadwal server-side: semester & hari sama, jam overlap, dan
+// salah satu dari dosen / ruangan (non-kosong) / angkatan (non-null) sama.
+// Mengembalikan baris kelas yang bentrok (dengan 'tipe_bentrok') atau null.
+function findJadwalConflict($pdo, array $candidate) {
+    $mulai   = normalizeJam($candidate['jam_mulai'] ?? null);
+    $selesai = normalizeJam($candidate['jam_selesai'] ?? null);
+    $hari    = trim((string)($candidate['hari'] ?? ''));
+    $semId   = (int)($candidate['semester_id'] ?? 0);
+
+    if ($mulai === null || $selesai === null || $hari === '' || $semId <= 0) {
+        return null;
+    }
+
+    $candMulai   = jamKeMenit($mulai);
+    $candSelesai = jamKeMenit($selesai);
+    $candDosen   = (int)($candidate['dosen_id'] ?? 0);
+    $candRuang   = strtolower(trim((string)($candidate['ruangan'] ?? '')));
+    $candAngkatan = (int)($candidate['angkatan_id'] ?? 0);
+    $excludeId   = (int)($candidate['id'] ?? 0);
+
+    $hasStructured = hasColumn($pdo, 'kelas', 'jam_mulai') && hasColumn($pdo, 'kelas', 'jam_selesai');
+    $jamCols = $hasStructured ? "k.jam_mulai, k.jam_selesai," : "";
+
+    $stmt = $pdo->prepare("
+        SELECT k.id, k.nama_kelas, k.hari, k.jam, {$jamCols} k.ruangan,
+               k.dosen_id, k.angkatan_id, k.semester_id,
+               mk.kode_mk, mk.nama_mk, ud.nama as dosen_nama
+        FROM kelas k
+        JOIN mata_kuliah mk ON k.mata_kuliah_id = mk.id
+        LEFT JOIN users ud ON k.dosen_id = ud.id
+        WHERE k.semester_id = :sem_id
+          AND k.hari = :hari
+          AND k.id <> :exclude_id
+    ");
+    $stmt->execute([
+        'sem_id'     => $semId,
+        'hari'       => $hari,
+        'exclude_id' => $excludeId,
+    ]);
+
+    foreach ($stmt->fetchAll() as $row) {
+        $rowMulai   = normalizeJam($row['jam_mulai'] ?? null);
+        $rowSelesai = normalizeJam($row['jam_selesai'] ?? null);
+        if ($rowMulai === null || $rowSelesai === null) {
+            // Fallback untuk baris legacy yang belum sempat dimigrasi.
+            [$rowMulai, $rowSelesai] = parseJamRange($row['jam'] ?? '');
+        }
+        if ($rowMulai === null || $rowSelesai === null) {
+            continue;
+        }
+
+        $overlap = ($candMulai < jamKeMenit($rowSelesai)) && ($candSelesai > jamKeMenit($rowMulai));
+        if (!$overlap) {
+            continue;
+        }
+
+        $tipe = null;
+        if ($candDosen > 0 && (int)$row['dosen_id'] === $candDosen) {
+            $tipe = 'Dosen';
+        } elseif ($candRuang !== '' && $candRuang === strtolower(trim((string)($row['ruangan'] ?? '')))) {
+            $tipe = 'Ruangan';
+        } elseif ($candAngkatan > 0 && !empty($row['angkatan_id']) && (int)$row['angkatan_id'] === $candAngkatan) {
+            $tipe = 'Angkatan';
+        }
+
+        if ($tipe !== null) {
+            $row['tipe_bentrok'] = $tipe;
+            return $row;
+        }
+    }
+
+    return null;
+}
+
+// Pesan bentrok yang seragam untuk seluruh endpoint.
+function pesanJadwalBentrok(array $conflict) {
+    $nama = $conflict['nama_mk'] ?? 'mata kuliah lain';
+    $kelas = $conflict['nama_kelas'] ?? '-';
+    $jadwal = formatJadwalServer($conflict['hari'] ?? null, $conflict['jam'] ?? null) ?? '-';
+    $tipe = $conflict['tipe_bentrok'] ?? 'Jadwal';
+    return "Jadwal bentrok pada {$tipe}: {$nama} ({$kelas}, {$jadwal}).";
+}
+
 // Angkatan wajib untuk mahasiswa; dosen & admin tidak memiliki angkatan
 function resolveAngkatan($role, $angkatanId, $angkatanName, $dbConnected, $pdo) {
     if ($role !== 'mahasiswa') {
@@ -219,7 +398,7 @@ if ($action === 'get_bootstrap_data') {
 
             // Data Semester Perkuliahan (Terintegrasi ke seluruh pengguna)
             $semesters = [];
-            $activeSemester = 'Ganjil 2024/2025';
+            $activeSemester = null;
             $activeSemesterId = 0;
             $stmtSem = $pdo->query("SELECT id, nama, is_aktif, created_at FROM semester ORDER BY is_aktif DESC, id DESC");
             if ($stmtSem) {
@@ -252,8 +431,9 @@ if ($action === 'get_bootstrap_data') {
             }
 
             // B. DATA MATA KULIAH:
-            $hasTargetAngkatan = hasColumn($pdo, 'mata_kuliah', 'target_angkatan');
-            $targetAngkatanCol = $hasTargetAngkatan ? "COALESCE(mk.target_angkatan, 'Angkatan 2024 A') as target_angkatan, mk.angkatan_id" : "'Angkatan 2024 A' as target_angkatan, NULL as angkatan_id";
+            $targetAngkatanCol = "NULL as target_angkatan, NULL as angkatan_id";
+            $hasJamStructured = hasColumn($pdo, 'kelas', 'jam_mulai') && hasColumn($pdo, 'kelas', 'jam_selesai');
+            $jamStructuredCols = $hasJamStructured ? ", k.jam_mulai, k.jam_selesai" : ", NULL as jam_mulai, NULL as jam_selesai";
 
             if ($role === 'admin') {
                 $stmt = $pdo->prepare("
@@ -267,9 +447,9 @@ if ($action === 'get_bootstrap_data') {
                            k.nama_kelas,
                            k.angkatan_id,
                            ang.nama_angkatan as angkatan_nama,
-                           CONCAT(COALESCE(k.hari, ''), ', ', COALESCE(k.jam, ''), ' WIB') as jadwal,
-                           COALESCE(k.ruangan, 'Lab Komputer CWE') as ruang,
-                           k.hari, k.jam, k.ruangan
+                           CASE WHEN k.hari IS NOT NULL AND k.hari <> '' AND k.jam IS NOT NULL AND k.jam <> '' THEN CONCAT(k.hari, ', ', k.jam, ' WIB') ELSE NULL END as jadwal,
+                           k.ruangan as ruang,
+                           k.hari, k.jam, k.ruangan{$jamStructuredCols}
                     FROM mata_kuliah mk
                     LEFT JOIN kelas k ON k.mata_kuliah_id = mk.id
                     LEFT JOIN users u ON k.dosen_id = u.id
@@ -290,9 +470,9 @@ if ($action === 'get_bootstrap_data') {
                            k.nama_kelas,
                            k.angkatan_id,
                            ang.nama_angkatan as angkatan_nama,
-                           CONCAT(COALESCE(k.hari, ''), ', ', COALESCE(k.jam, ''), ' WIB') as jadwal,
-                           COALESCE(k.ruangan, 'Lab Komputer CWE') as ruang,
-                           k.hari, k.jam, k.ruangan
+                           CASE WHEN k.hari IS NOT NULL AND k.hari <> '' AND k.jam IS NOT NULL AND k.jam <> '' THEN CONCAT(k.hari, ', ', k.jam, ' WIB') ELSE NULL END as jadwal,
+                           k.ruangan as ruang,
+                           k.hari, k.jam, k.ruangan{$jamStructuredCols}
                     FROM kelas k
                     JOIN mata_kuliah mk ON k.mata_kuliah_id = mk.id
                     JOIN users u ON k.dosen_id = u.id
@@ -311,14 +491,14 @@ if ($action === 'get_bootstrap_data') {
                            COALESCE(u.nama, 'Belum Ditentukan') as dosen,
                            k.dosen_id,
                            COALESCE(k.id, 0) as kelas_id,
-                           COALESCE(k.nama_kelas, CONCAT('TRPL-', mk.semester_paket)) as nama_kelas,
+                           k.nama_kelas,
                            k.angkatan_id as kelas_angkatan_id,
                            ang.nama_angkatan as angkatan_nama,
-                           CONCAT(COALESCE(k.hari, 'Senin'), ', ', COALESCE(k.jam, '08:00 - 10:30'), ' WIB') as jadwal,
-                           COALESCE(k.ruangan, 'Lab Komputer CWE') as ruang,
-                           COALESCE(k.hari, 'Senin') as hari,
-                           COALESCE(k.jam, '08:00 - 10:30') as jam,
-                           COALESCE(k.ruangan, 'Lab Komputer CWE') as ruangan
+                           CASE WHEN k.hari IS NOT NULL AND k.hari <> '' AND k.jam IS NOT NULL AND k.jam <> '' THEN CONCAT(k.hari, ', ', k.jam, ' WIB') ELSE NULL END as jadwal,
+                           k.ruangan as ruang,
+                           k.hari as hari,
+                           k.jam as jam,
+                           k.ruangan as ruangan{$jamStructuredCols}
                     FROM mata_kuliah mk
                     LEFT JOIN kelas k ON k.mata_kuliah_id = mk.id 
                          AND (k.semester_id = :active_sem1 OR k.semester_id IS NULL)
@@ -404,7 +584,7 @@ if ($action === 'get_bootstrap_data') {
                     'deadline'     => $rt['deadline'],
                     'lampiranSoal' => !empty($rt['lampiran_nama']) ? [
                         'nama'    => $rt['lampiran_nama'],
-                        'size'    => $rt['lampiran_size'] ?? '500 KB',
+                        'size'    => $rt['lampiran_size'] ?? '',
                         'dataUrl' => $rt['lampiran_path']
                     ] : null,
                     'submissions'  => []
@@ -443,7 +623,7 @@ if ($action === 'get_bootstrap_data') {
                         'submittedAt'  => $s['submittedAt'],
                         'fileJawaban'  => [
                             'nama'    => $s['file_nama'],
-                            'size'    => $s['file_size'],
+                            'size'    => $s['file_size'] ?? '',
                             'dataUrl' => $s['file_path']
                         ],
                         'catatanMhs'   => $s['catatanMhs'],
@@ -515,7 +695,7 @@ if ($action === 'get_bootstrap_data') {
             if ($role === 'dosen') {
                 $stmtKelas = $pdo->prepare("
                     SELECT k.id, k.nama_kelas, k.mata_kuliah_id, k.dosen_id, k.semester_id,
-                           k.angkatan_id, k.hari, k.jam, k.ruangan,
+                           k.angkatan_id, k.hari, k.jam, k.ruangan{$jamStructuredCols},
                            mk.kode_mk, mk.nama_mk, mk.sks, mk.semester_paket,
                            ud.nama as dosen_nama, {$fotoDosenKCol},
                            s.nama as semester_nama,
@@ -532,7 +712,7 @@ if ($action === 'get_bootstrap_data') {
             } else {
                 $stmtKelas = $pdo->prepare("
                     SELECT k.id, k.nama_kelas, k.mata_kuliah_id, k.dosen_id, k.semester_id,
-                           k.angkatan_id, k.hari, k.jam, k.ruangan,
+                           k.angkatan_id, k.hari, k.jam, k.ruangan{$jamStructuredCols},
                            mk.kode_mk, mk.nama_mk, mk.sks, mk.semester_paket,
                            ud.nama as dosen_nama, {$fotoDosenKCol},
                            s.nama as semester_nama,
@@ -584,6 +764,12 @@ if ($action === 'get_bootstrap_data') {
                 $stmtJmlTugas->execute(['kelas_id' => $rk['id']]);
                 $jmlTugas = (int)$stmtJmlTugas->fetchColumn();
 
+                $rkJamMulai = isset($rk['jam_mulai']) && $rk['jam_mulai'] !== null ? substr((string)$rk['jam_mulai'], 0, 5) : null;
+                $rkJamSelesai = isset($rk['jam_selesai']) && $rk['jam_selesai'] !== null ? substr((string)$rk['jam_selesai'], 0, 5) : null;
+                $rkJam = ($rkJamMulai !== null && $rkJamSelesai !== null)
+                    ? "{$rkJamMulai} - {$rkJamSelesai}"
+                    : ($rk['jam'] ?? null);
+
                 $kelasList[] = [
                     'id'               => (int)$rk['id'],
                     'nama_kelas'       => $rk['nama_kelas'],
@@ -600,10 +786,12 @@ if ($action === 'get_bootstrap_data') {
                     'angkatan_id'      => !empty($rk['angkatan_id']) ? (int)$rk['angkatan_id'] : null,
                     'angkatan_nama'    => $rk['angkatan_nama'] ?? null,
                     'angkatan_tahun'   => $rk['angkatan_tahun'] ?? null,
-                    'hari'             => $rk['hari'] ?? 'Senin',
-                    'jam'              => $rk['jam'] ?? '08:00 - 10:30',
-                    'ruangan'          => $rk['ruangan'] ?? 'Lab Komputer CWE',
-                    'jadwal'           => (!empty($rk['hari']) && !empty($rk['jam'])) ? "{$rk['hari']}, {$rk['jam']} WIB" : 'Sesuai Jadwal',
+                    'hari'             => $rk['hari'] ?? null,
+                    'jam'              => $rkJam,
+                    'jam_mulai'        => $rkJamMulai,
+                    'jam_selesai'      => $rkJamSelesai,
+                    'ruangan'          => $rk['ruangan'] ?? null,
+                    'jadwal'           => formatJadwalServer($rk['hari'] ?? null, $rkJam),
                     'jumlah_mahasiswa' => count($enrolledStudents),
                     'jumlah_tugas'     => $jmlTugas,
                     'mahasiswa'        => $enrolledStudents
@@ -672,7 +860,7 @@ if ($action === 'get_bootstrap_data') {
         'success'        => true,
         'db_connected'   => $db_connected,
         'currentUser'    => $currentUser,
-        'activeSemester' => $activeSemester ?? 'Ganjil 2024/2025',
+        'activeSemester' => $activeSemester,
         'semesters'      => $semesters ?? [],
         'users'          => $users,
         'dosenList'      => $dosenList ?? [],
@@ -737,7 +925,7 @@ if ($action === 'create_materi' && $method === 'POST') {
                 'judul'     => $judul,
                 'tipe'      => $finalTipe,
                 'file'      => $materiPath,
-                'size'      => $lampiran['size'] ?? '1.2 MB'
+                'size'      => $lampiran['size'] ?? ''
             ]);
 
             jsonRes(['success' => true, 'message' => 'Materi berhasil diunggah!']);
@@ -1177,9 +1365,20 @@ if ($action === 'update_mata_kuliah' && $method === 'POST') {
     $deskripsi       = trim($input['deskripsi'] ?? '');
     $kelas_id        = !empty($input['kelas_id']) ? (int)$input['kelas_id'] : null;
     $dosen_id        = !empty($input['dosen_id']) ? (int)$input['dosen_id'] : null;
-    $hari            = trim($input['hari'] ?? 'Senin');
-    $jam             = trim($input['jam'] ?? '08:00 - 10:30');
-    $ruangan         = trim($input['ruangan'] ?? 'Lab Komputer CWE');
+    $hari            = trim((string)($input['hari'] ?? ''));
+    $ruangan         = trim((string)($input['ruangan'] ?? ''));
+    // Bedakan "tidak dikirim" vs "dikosongkan" agar jadwal bisa dibersihkan tanpa mengarang nilai.
+    $hariProvided    = array_key_exists('hari', $input);
+    $ruanganProvided = array_key_exists('ruangan', $input);
+    $jadwalInput     = resolveJadwalInput($input);
+    $jadwalProvided  = $jadwalInput['provided'];
+
+    if ($ruanganProvided && mb_strlen($ruangan) > 50) {
+        jsonRes(['success' => false, 'message' => 'Nama ruangan maksimal 50 karakter.'], 400);
+    }
+    if ($hariProvided && $hari !== '' && !jadwalHariValid($hari)) {
+        jsonRes(['success' => false, 'message' => 'Hari perkuliahan tidak valid. Pilih Senin sampai Sabtu.'], 400);
+    }
 
     if ($sks < 1 || $sks > 8) {
         jsonRes(['success' => false, 'message' => 'Bobot SKS harus berada dalam rentang 1 hingga 8 SKS.'], 400);
@@ -1218,26 +1417,94 @@ if ($action === 'update_mata_kuliah' && $method === 'POST') {
 
             // Perbarui kelas yang dipilih saja (jika ada)
             $existingKelas = null;
+            $hasJamStructured = hasColumn($pdo, 'kelas', 'jam_mulai') && hasColumn($pdo, 'kelas', 'jam_selesai');
+            $kelasJamCols = $hasJamStructured ? ", jam_mulai, jam_selesai" : "";
             if ($kelas_id) {
-                $chkKelas = $pdo->prepare("SELECT id, nama_kelas, dosen_id FROM kelas WHERE id = :k_id AND mata_kuliah_id = :mk_id LIMIT 1");
+                $chkKelas = $pdo->prepare("SELECT id, nama_kelas, dosen_id, semester_id, angkatan_id, hari, jam, ruangan{$kelasJamCols} FROM kelas WHERE id = :k_id AND mata_kuliah_id = :mk_id LIMIT 1");
                 $chkKelas->execute(['k_id' => $kelas_id, 'mk_id' => $id]);
                 $existingKelas = $chkKelas->fetch() ?: null;
             }
 
+            $respHari = $existingKelas['hari'] ?? null;
+            $respJam = $existingKelas['jam'] ?? null;
+            $respRuang = $existingKelas['ruangan'] ?? null;
+            $respMulai = null;
+            $respSelesai = null;
+
             if ($existingKelas) {
                 $newDosenId = $dosen_id ?: (int)($existingKelas['dosen_id'] ?? 0);
-                $upKelas = $pdo->prepare("
-                    UPDATE kelas 
-                    SET dosen_id = :dosen_id, hari = :hari, jam = :jam, ruangan = :ruang
-                    WHERE id = :k_id
-                ");
-                $upKelas->execute([
-                    'dosen_id' => $newDosenId,
-                    'hari'     => $hari,
-                    'jam'      => $jam,
-                    'ruang'    => $ruangan,
-                    'k_id'     => $existingKelas['id']
-                ]);
+
+                // Nilai efektif setelah perubahan (dipakai untuk validasi bentrok & respons).
+                $effHari = $hariProvided ? ($hari !== '' ? $hari : null) : ($existingKelas['hari'] ?? null);
+                $effRuang = $ruanganProvided ? ($ruangan !== '' ? $ruangan : null) : ($existingKelas['ruangan'] ?? null);
+
+                if ($jadwalProvided) {
+                    $effMulai   = $jadwalInput['jam_mulai'];
+                    $effSelesai = $jadwalInput['jam_selesai'];
+                } else {
+                    $effMulai   = $hasJamStructured ? normalizeJam($existingKelas['jam_mulai'] ?? null) : null;
+                    $effSelesai = $hasJamStructured ? normalizeJam($existingKelas['jam_selesai'] ?? null) : null;
+                    if ($effMulai === null || $effSelesai === null) {
+                        [$effMulai, $effSelesai] = parseJamRange($existingKelas['jam'] ?? '');
+                    }
+                }
+                $effJam = ($effMulai !== null && $effSelesai !== null) ? "{$effMulai} - {$effSelesai}" : null;
+
+                // Validasi bentrok hanya bila jadwal/dosen/ruangan berubah.
+                $scheduleChanged = $jadwalProvided
+                    || ($effHari !== ($existingKelas['hari'] ?? null))
+                    || ($effRuang !== ($existingKelas['ruangan'] ?? null))
+                    || ($newDosenId !== (int)($existingKelas['dosen_id'] ?? 0));
+
+                if ($scheduleChanged && $effHari !== null && $effMulai !== null && $effSelesai !== null) {
+                    $conflict = findJadwalConflict($pdo, [
+                        'id'          => $existingKelas['id'],
+                        'semester_id' => $existingKelas['semester_id'],
+                        'angkatan_id' => $existingKelas['angkatan_id'],
+                        'dosen_id'    => $newDosenId,
+                        'ruangan'     => $effRuang,
+                        'hari'        => $effHari,
+                        'jam_mulai'   => $effMulai,
+                        'jam_selesai' => $effSelesai,
+                    ]);
+                    if ($conflict) {
+                        jsonRes(['success' => false, 'message' => pesanJadwalBentrok($conflict)], 409);
+                    }
+                }
+
+                $setParts = ['dosen_id = :dosen_id'];
+                $params = ['dosen_id' => $newDosenId, 'k_id' => $existingKelas['id']];
+                if (!empty($input['nama_kelas'])) {
+                    $setParts[] = 'nama_kelas = :nama_kelas';
+                    $params['nama_kelas'] = trim((string)$input['nama_kelas']);
+                }
+                // Hanya tulis kolom jadwal yang benar-benar dikirim; nilai kosong = kosongkan (bukan karangan).
+                if ($hariProvided) {
+                    $setParts[] = 'hari = :hari';
+                    $params['hari'] = $effHari;
+                }
+                if ($jadwalProvided) {
+                    $setParts[] = 'jam = :jam';
+                    $params['jam'] = $effJam;
+                    if ($hasJamStructured) {
+                        $setParts[] = 'jam_mulai = :jam_mulai';
+                        $setParts[] = 'jam_selesai = :jam_selesai';
+                        $params['jam_mulai'] = $effMulai;
+                        $params['jam_selesai'] = $effSelesai;
+                    }
+                }
+                if ($ruanganProvided) {
+                    $setParts[] = 'ruangan = :ruang';
+                    $params['ruang'] = $effRuang;
+                }
+                $upKelas = $pdo->prepare("UPDATE kelas SET " . implode(', ', $setParts) . " WHERE id = :k_id");
+                $upKelas->execute($params);
+
+                $respHari = $effHari;
+                $respJam = $effJam;
+                $respRuang = $effRuang;
+                $respMulai = $effMulai;
+                $respSelesai = $effSelesai;
             }
 
             jsonRes([
@@ -1251,14 +1518,16 @@ if ($action === 'update_mata_kuliah' && $method === 'POST') {
                     'semester_paket'  => $semester_paket,
                     'deskripsi'       => $deskripsi,
                     'dosen'           => $dosenNama,
-                    'dosen_id'        => $dosen_id,
+                    'dosen_id'        => $dosen_id ?: ($existingKelas['dosen_id'] ?? null),
                     'kelas_id'        => $existingKelas['id'] ?? null,
                     'nama_kelas'      => $existingKelas['nama_kelas'] ?? null,
-                    'hari'            => $hari,
-                    'jam'             => $jam,
-                    'ruang'           => $ruangan,
-                    'ruangan'         => $ruangan,
-                    'jadwal'          => !empty($hari) && !empty($jam) ? "{$hari}, {$jam} WIB" : "Sesuai Jadwal"
+                    'hari'            => $respHari,
+                    'jam'             => $respJam,
+                    'jam_mulai'       => $respMulai,
+                    'jam_selesai'     => $respSelesai,
+                    'ruang'           => $respRuang,
+                    'ruangan'         => $respRuang,
+                    'jadwal'          => formatJadwalServer($respHari, $respJam)
                 ]
             ]);
         } catch (PDOException $e) {
@@ -1380,12 +1649,10 @@ if ($action === 'update_angkatan' && $method === 'POST') {
                 'id'    => $id
             ]);
 
-            // Sinkronisasi teks nama angkatan pada mahasiswa dan matkul jika berubah
+            // Sinkronisasi teks nama angkatan pada mahasiswa jika berubah
             if ($oldNama && $oldNama !== $nama_angkatan) {
                 try {
                     $pdo->prepare("UPDATE users SET angkatan = :new_nama WHERE angkatan_id = :id OR angkatan = :old_nama")
-                        ->execute(['new_nama' => $nama_angkatan, 'id' => $id, 'old_nama' => $oldNama]);
-                    $pdo->prepare("UPDATE mata_kuliah SET target_angkatan = :new_nama WHERE angkatan_id = :id OR target_angkatan = :old_nama")
                         ->execute(['new_nama' => $nama_angkatan, 'id' => $id, 'old_nama' => $oldNama]);
                 } catch (Exception $e) {}
             }
@@ -1866,7 +2133,7 @@ if ($action === 'submit_tugas' && $method === 'POST') {
                         'tugas_id' => $tugasId,
                         'mhs_id'   => $userId,
                         'fn'       => validateLength($file['nama'], 1, 255, 'Nama Berkas'),
-                        'fs'       => $file['size'] ?? '500 KB',
+                        'fs'       => $file['size'] ?? '',
                         'fp'       => $filePath,
                         'fj'       => $filePath,
                         'catatan'  => $catatan
@@ -1886,7 +2153,7 @@ if ($action === 'submit_tugas' && $method === 'POST') {
                         'tugas_id' => $tugasId,
                         'mhs_id'   => $userId,
                         'fn'       => validateLength($file['nama'], 1, 255, 'Nama Berkas'),
-                        'fs'       => $file['size'] ?? '500 KB',
+                        'fs'       => $file['size'] ?? '',
                         'fp'       => $filePath,
                         'catatan'  => $catatan
                     ]);
@@ -1953,6 +2220,111 @@ if ($action === 'grade_submission' && $method === 'POST') {
 // 6. MANAJEMEN KELAS & ENROLLMENT MAHASISWA (KHUSUS ADMIN)
 // =============================================================
 
+// A0. ATUR / PERBARUI JADWAL KELAS (KHUSUS ADMIN)
+if ($action === 'update_jadwal' && $method === 'POST') {
+    if ($currentUser['role'] !== 'admin') {
+        jsonRes(['success' => false, 'message' => 'Akses ditolak: Jadwal hanya dapat diatur oleh Administrator.'], 403);
+    }
+
+    $input      = json_decode(file_get_contents('php://input'), true) ?? [];
+    $id         = validatePositiveNumber($input['id'] ?? 0, 'ID Kelas');
+    $hari       = trim((string)($input['hari'] ?? ''));
+    $ruangan    = trim((string)($input['ruangan'] ?? ''));
+    $jamMulai   = normalizeJam($input['jam_mulai'] ?? null);
+    $jamSelesai = normalizeJam($input['jam_selesai'] ?? null);
+
+    if (!jadwalHariValid($hari)) {
+        jsonRes(['success' => false, 'message' => 'Hari perkuliahan tidak valid. Pilih Senin sampai Sabtu.'], 400);
+    }
+    if ($jamMulai === null || $jamSelesai === null) {
+        jsonRes(['success' => false, 'message' => 'Jam mulai dan jam selesai wajib diisi dengan format HH:MM.'], 400);
+    }
+    if (jamKeMenit($jamSelesai) <= jamKeMenit($jamMulai)) {
+        jsonRes(['success' => false, 'message' => 'Jam selesai harus setelah jam mulai.'], 400);
+    }
+    if (mb_strlen($ruangan) > 50) {
+        jsonRes(['success' => false, 'message' => 'Nama ruangan maksimal 50 karakter.'], 400);
+    }
+    if ($ruangan === '') {
+        jsonRes(['success' => false, 'message' => 'Ruangan perkuliahan wajib diisi.'], 400);
+    }
+
+    if ($db_connected && $pdo) {
+        try {
+            $stmtKelas = $pdo->prepare("
+                SELECT k.id, k.nama_kelas, k.semester_id, k.angkatan_id, k.dosen_id,
+                       mk.kode_mk, mk.nama_mk, ud.nama as dosen_nama
+                FROM kelas k
+                JOIN mata_kuliah mk ON k.mata_kuliah_id = mk.id
+                LEFT JOIN users ud ON k.dosen_id = ud.id
+                WHERE k.id = :id
+                LIMIT 1
+            ");
+            $stmtKelas->execute(['id' => $id]);
+            $kelas = $stmtKelas->fetch();
+            if (!$kelas) {
+                jsonRes(['success' => false, 'message' => 'Kelas tidak ditemukan.'], 404);
+            }
+
+            $conflict = findJadwalConflict($pdo, [
+                'id'          => $id,
+                'semester_id' => $kelas['semester_id'],
+                'angkatan_id' => $kelas['angkatan_id'],
+                'dosen_id'    => $kelas['dosen_id'],
+                'ruangan'     => $ruangan,
+                'hari'        => $hari,
+                'jam_mulai'   => $jamMulai,
+                'jam_selesai' => $jamSelesai,
+            ]);
+            if ($conflict) {
+                jsonRes(['success' => false, 'message' => pesanJadwalBentrok($conflict)], 409);
+            }
+
+            $jam = "{$jamMulai} - {$jamSelesai}";
+            $hasJamStructured = hasColumn($pdo, 'kelas', 'jam_mulai') && hasColumn($pdo, 'kelas', 'jam_selesai');
+            $setColumns = "hari = :hari, jam = :jam, ruangan = :ruang";
+            $params = [
+                'hari'  => $hari,
+                'jam'   => $jam,
+                'ruang' => $ruangan,
+                'id'    => $id,
+            ];
+            if ($hasJamStructured) {
+                $setColumns .= ", jam_mulai = :jam_mulai, jam_selesai = :jam_selesai";
+                $params['jam_mulai']   = $jamMulai;
+                $params['jam_selesai'] = $jamSelesai;
+            }
+            $upd = $pdo->prepare("UPDATE kelas SET {$setColumns} WHERE id = :id");
+            $upd->execute($params);
+
+            jsonRes([
+                'success' => true,
+                'message' => "Jadwal kelas '{$kelas['nama_kelas']}' berhasil disimpan!",
+                'kelas'   => [
+                    'id'          => $id,
+                    'nama_kelas'  => $kelas['nama_kelas'],
+                    'kode_mk'     => $kelas['kode_mk'] ?? '',
+                    'nama_mk'     => $kelas['nama_mk'] ?? '',
+                    'dosen_id'    => (int)($kelas['dosen_id'] ?? 0),
+                    'dosen_nama'  => $kelas['dosen_nama'] ?? null,
+                    'semester_id' => (int)($kelas['semester_id'] ?? 0),
+                    'angkatan_id' => !empty($kelas['angkatan_id']) ? (int)$kelas['angkatan_id'] : null,
+                    'hari'        => $hari,
+                    'jam'         => $jam,
+                    'jam_mulai'   => $jamMulai,
+                    'jam_selesai' => $jamSelesai,
+                    'ruangan'     => $ruangan,
+                    'jadwal'      => formatJadwalServer($hari, $jam),
+                ]
+            ]);
+        } catch (PDOException $e) {
+            jsonRes(['success' => false, 'message' => 'Gagal menyimpan jadwal: ' . $e->getMessage()], 500);
+        }
+    }
+
+    jsonRes(['success' => false, 'message' => 'Database tidak terhubung. Jadwal tidak dapat disimpan.'], 503);
+}
+
 // A. TAMBAH KELAS BARU (CREATE CLASS)
 if ($action === 'create_class' && $method === 'POST') {
     if ($currentUser['role'] !== 'admin') {
@@ -1965,9 +2337,19 @@ if ($action === 'create_class' && $method === 'POST') {
     $dosen_id       = validatePositiveNumber($input['dosen_id'] ?? 0, 'Dosen Pengampu');
     $semester_id    = validatePositiveNumber($input['semester_id'] ?? 1, 'Semester');
     $angkatan_id    = !empty($input['angkatan_id']) ? (int)$input['angkatan_id'] : null;
-    $hari           = trim($input['hari'] ?? 'Senin');
-    $jam            = trim($input['jam'] ?? '08:00 - 10:30');
-    $ruangan        = trim($input['ruangan'] ?? 'Lab Komputer CWE');
+    $hari           = trim((string)($input['hari'] ?? ''));
+    $ruangan        = trim((string)($input['ruangan'] ?? ''));
+    $jadwalInput    = resolveJadwalInput($input);
+    $jamMulai       = $jadwalInput['jam_mulai'];
+    $jamSelesai     = $jadwalInput['jam_selesai'];
+    $jam            = $jadwalInput['jam'];
+
+    if (mb_strlen($ruangan) > 50) {
+        jsonRes(['success' => false, 'message' => 'Nama ruangan maksimal 50 karakter.'], 400);
+    }
+    if ($hari !== '' && !jadwalHariValid($hari)) {
+        jsonRes(['success' => false, 'message' => 'Hari perkuliahan tidak valid. Pilih Senin sampai Sabtu.'], 400);
+    }
 
     if ($db_connected && $pdo) {
         try {
@@ -1993,26 +2375,51 @@ if ($action === 'create_class' && $method === 'POST') {
                 }
             }
 
-            $ins = $pdo->prepare("
-                INSERT INTO kelas (mata_kuliah_id, dosen_id, semester_id, angkatan_id, nama_kelas, hari, jam, ruangan)
-                VALUES (:mk_id, :dosen_id, :sem_id, :angkatan_id, :nama_kelas, :hari, :jam, :ruang)
-            ");
-            $ins->execute([
+            // Validasi bentrok jadwal di sisi server (dosen/ruangan/angkatan)
+            if ($hari !== '' && $jamMulai !== null && $jamSelesai !== null) {
+                $conflict = findJadwalConflict($pdo, [
+                    'semester_id' => $semester_id,
+                    'angkatan_id' => $angkatan_id,
+                    'dosen_id'    => $dosen_id,
+                    'ruangan'     => $ruangan,
+                    'hari'        => $hari,
+                    'jam_mulai'   => $jamMulai,
+                    'jam_selesai' => $jamSelesai,
+                ]);
+                if ($conflict) {
+                    jsonRes(['success' => false, 'message' => pesanJadwalBentrok($conflict)], 409);
+                }
+            }
+
+            $hasJamStructured = hasColumn($pdo, 'kelas', 'jam_mulai') && hasColumn($pdo, 'kelas', 'jam_selesai');
+            $insColumns = "mata_kuliah_id, dosen_id, semester_id, angkatan_id, nama_kelas, hari, jam, ruangan";
+            $insValues  = ":mk_id, :dosen_id, :sem_id, :angkatan_id, :nama_kelas, :hari, :jam, :ruang";
+            $insParams  = [
                 'mk_id'      => $mata_kuliah_id,
                 'dosen_id'   => $dosen_id,
                 'sem_id'     => $semester_id,
                 'angkatan_id' => $angkatan_id,
                 'nama_kelas' => $nama_kelas,
-                'hari'       => $hari,
+                'hari'       => $hari !== '' ? $hari : null,
                 'jam'        => $jam,
-                'ruang'      => $ruangan
-            ]);
+                'ruang'      => $ruangan !== '' ? $ruangan : null
+            ];
+            if ($hasJamStructured) {
+                $insColumns .= ", jam_mulai, jam_selesai";
+                $insValues  .= ", :jam_mulai, :jam_selesai";
+                $insParams['jam_mulai']   = $jamMulai;
+                $insParams['jam_selesai'] = $jamSelesai;
+            }
+
+            $ins = $pdo->prepare("INSERT INTO kelas ({$insColumns}) VALUES ({$insValues})");
+            $ins->execute($insParams);
             $newClassId = (int)$pdo->lastInsertId();
 
             // Ambil info lengkap kelas yang baru dibuat
+            $jamColsK = $hasJamStructured ? ", k.jam_mulai, k.jam_selesai" : "";
             $stmtK = $pdo->prepare("
                 SELECT k.id, k.nama_kelas, k.mata_kuliah_id, k.dosen_id, k.semester_id,
-                       k.angkatan_id, k.hari, k.jam, k.ruangan,
+                       k.angkatan_id, k.hari, k.jam, k.ruangan{$jamColsK},
                        mk.kode_mk, mk.nama_mk, mk.sks, mk.semester_paket,
                        ud.nama as dosen_nama,
                        s.nama as semester_nama,
@@ -2090,10 +2497,12 @@ if ($action === 'create_class' && $method === 'POST') {
                     'angkatan_id'      => $angkatan_id,
                     'angkatan_nama'    => $rowK['angkatan_nama'] ?? null,
                     'angkatan_tahun'   => $rowK['angkatan_tahun'] ?? null,
-                    'hari'             => $hari,
+                    'hari'             => $hari !== '' ? $hari : null,
                     'jam'              => $jam,
-                    'ruangan'          => $ruangan,
-                    'jadwal'           => "{$hari}, {$jam} WIB",
+                    'jam_mulai'        => $jamMulai,
+                    'jam_selesai'      => $jamSelesai,
+                    'ruangan'          => $ruangan !== '' ? $ruangan : null,
+                    'jadwal'           => formatJadwalServer($hari, $jam),
                     'jumlah_mahasiswa' => 0,
                     'jumlah_tugas'     => 0,
                     'mahasiswa'        => []
@@ -2118,10 +2527,12 @@ if ($action === 'create_class' && $method === 'POST') {
             'angkatan_id'      => $angkatan_id,
             'angkatan_nama'    => null,
             'angkatan_tahun'   => null,
-            'hari'             => $hari,
+            'hari'             => $hari !== '' ? $hari : null,
             'jam'              => $jam,
-            'ruangan'          => $ruangan,
-            'jadwal'           => "{$hari}, {$jam} WIB",
+            'jam_mulai'        => $jamMulai,
+            'jam_selesai'      => $jamSelesai,
+            'ruangan'          => $ruangan !== '' ? $ruangan : null,
+            'jadwal'           => formatJadwalServer($hari, $jam),
             'jumlah_mahasiswa' => 0,
             'jumlah_tugas'     => 0,
             'mahasiswa'        => []
@@ -2142,9 +2553,19 @@ if ($action === 'update_class' && $method === 'POST') {
     $dosen_id       = validatePositiveNumber($input['dosen_id'] ?? 0, 'Dosen Pengampu');
     $semester_id    = validatePositiveNumber($input['semester_id'] ?? 1, 'Semester');
     $angkatan_id    = !empty($input['angkatan_id']) ? (int)$input['angkatan_id'] : null;
-    $hari           = trim($input['hari'] ?? 'Senin');
-    $jam            = trim($input['jam'] ?? '08:00 - 10:30');
-    $ruangan        = trim($input['ruangan'] ?? 'Lab Komputer CWE');
+    $hari           = trim((string)($input['hari'] ?? ''));
+    $ruangan        = trim((string)($input['ruangan'] ?? ''));
+    $jadwalInput    = resolveJadwalInput($input);
+    $jamMulai       = $jadwalInput['jam_mulai'];
+    $jamSelesai     = $jadwalInput['jam_selesai'];
+    $jam            = $jadwalInput['jam'];
+
+    if (mb_strlen($ruangan) > 50) {
+        jsonRes(['success' => false, 'message' => 'Nama ruangan maksimal 50 karakter.'], 400);
+    }
+    if ($hari !== '' && !jadwalHariValid($hari)) {
+        jsonRes(['success' => false, 'message' => 'Hari perkuliahan tidak valid. Pilih Senin sampai Sabtu.'], 400);
+    }
 
     if ($db_connected && $pdo) {
         try {
@@ -2156,23 +2577,66 @@ if ($action === 'update_class' && $method === 'POST') {
                 }
             }
 
-            $up = $pdo->prepare("
-                UPDATE kelas 
-                SET nama_kelas = :nama_kelas, mata_kuliah_id = :mk_id, dosen_id = :dosen_id,
-                    semester_id = :sem_id, angkatan_id = :angkatan_id, hari = :hari, jam = :jam, ruangan = :ruang
-                WHERE id = :id
-            ");
-            $up->execute([
+            // Nilai jadwal baru (null bila dikosongkan) + validasi bentrok.
+            $newHari    = $hari !== '' ? $hari : null;
+            $newRuang   = $ruangan !== '' ? $ruangan : null;
+            $hasJamStructured = hasColumn($pdo, 'kelas', 'jam_mulai') && hasColumn($pdo, 'kelas', 'jam_selesai');
+            $kelasJamCols = $hasJamStructured ? ", jam_mulai, jam_selesai" : "";
+            $stmtExisting = $pdo->prepare("SELECT hari, jam, ruangan, dosen_id, semester_id, angkatan_id{$kelasJamCols} FROM kelas WHERE id = :id LIMIT 1");
+            $stmtExisting->execute(['id' => $id]);
+            $existingRow = $stmtExisting->fetch() ?: null;
+
+            $jadwalBerubah = true;
+            if ($existingRow) {
+                $oldMulai   = $hasJamStructured ? normalizeJam($existingRow['jam_mulai'] ?? null) : null;
+                $oldSelesai = $hasJamStructured ? normalizeJam($existingRow['jam_selesai'] ?? null) : null;
+                if ($oldMulai === null || $oldSelesai === null) {
+                    [$oldMulai, $oldSelesai] = parseJamRange($existingRow['jam'] ?? '');
+                }
+                $jadwalBerubah = ($newHari !== ($existingRow['hari'] ?? null))
+                    || ($newRuang !== ($existingRow['ruangan'] ?? null))
+                    || ((int)$dosen_id !== (int)($existingRow['dosen_id'] ?? 0))
+                    || ($jamMulai !== $oldMulai)
+                    || ($jamSelesai !== $oldSelesai);
+            }
+
+            if ($jadwalBerubah && $newHari !== null && $jamMulai !== null && $jamSelesai !== null) {
+                $conflict = findJadwalConflict($pdo, [
+                    'id'          => $id,
+                    'semester_id' => $semester_id,
+                    'angkatan_id' => $angkatan_id,
+                    'dosen_id'    => $dosen_id,
+                    'ruangan'     => $newRuang,
+                    'hari'        => $newHari,
+                    'jam_mulai'   => $jamMulai,
+                    'jam_selesai' => $jamSelesai,
+                ]);
+                if ($conflict) {
+                    jsonRes(['success' => false, 'message' => pesanJadwalBentrok($conflict)], 409);
+                }
+            }
+
+            $upColumns = "nama_kelas = :nama_kelas, mata_kuliah_id = :mk_id, dosen_id = :dosen_id,
+                    semester_id = :sem_id, angkatan_id = :angkatan_id, hari = :hari, jam = :jam, ruangan = :ruang";
+            $upParams = [
                 'nama_kelas' => $nama_kelas,
                 'mk_id'      => $mata_kuliah_id,
                 'dosen_id'   => $dosen_id,
                 'sem_id'     => $semester_id,
                 'angkatan_id' => $angkatan_id,
-                'hari'       => $hari,
+                'hari'       => $newHari,
                 'jam'        => $jam,
-                'ruang'      => $ruangan,
+                'ruang'      => $newRuang,
                 'id'         => $id
-            ]);
+            ];
+            if ($hasJamStructured) {
+                $upColumns .= ", jam_mulai = :jam_mulai, jam_selesai = :jam_selesai";
+                $upParams['jam_mulai']   = $jamMulai;
+                $upParams['jam_selesai'] = $jamSelesai;
+            }
+
+            $up = $pdo->prepare("UPDATE kelas SET {$upColumns} WHERE id = :id");
+            $up->execute($upParams);
 
             $stmtK = $pdo->prepare("
                 SELECT mk.kode_mk, mk.nama_mk, mk.sks, mk.semester_paket,
@@ -2206,10 +2670,12 @@ if ($action === 'update_class' && $method === 'POST') {
                     'angkatan_id'    => $angkatan_id,
                     'angkatan_nama'  => $rowK['angkatan_nama'] ?? null,
                     'angkatan_tahun' => $rowK['angkatan_tahun'] ?? null,
-                    'hari'           => $hari,
+                    'hari'           => $hari !== '' ? $hari : null,
                     'jam'            => $jam,
-                    'ruangan'        => $ruangan,
-                    'jadwal'         => "{$hari}, {$jam} WIB"
+                    'jam_mulai'      => $jamMulai,
+                    'jam_selesai'    => $jamSelesai,
+                    'ruangan'        => $ruangan !== '' ? $ruangan : null,
+                    'jadwal'         => formatJadwalServer($hari, $jam)
                 ]
             ]);
         } catch (PDOException $e) {
@@ -2229,10 +2695,12 @@ if ($action === 'update_class' && $method === 'POST') {
             'angkatan_id'    => $angkatan_id,
             'angkatan_nama'  => null,
             'angkatan_tahun' => null,
-            'hari'           => $hari,
+            'hari'           => $hari !== '' ? $hari : null,
             'jam'            => $jam,
-            'ruangan'        => $ruangan,
-            'jadwal'         => "{$hari}, {$jam} WIB"
+            'jam_mulai'      => $jamMulai,
+            'jam_selesai'    => $jamSelesai,
+            'ruangan'        => $ruangan !== '' ? $ruangan : null,
+            'jadwal'         => formatJadwalServer($hari, $jam)
         ]
     ]);
 }

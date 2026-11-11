@@ -192,10 +192,8 @@ function renderAdminCourses() {
                             const angkatanLabels = [...new Set(kelasMK.map(k => k.angkatan_nama || k.nama_kelas).filter(Boolean))];
                             const primaryKelas = kelasMK[0] || null;
                             const dosenNama = primaryKelas ? (primaryKelas.dosen_nama || 'Belum Ditentukan') : 'Belum ada kelas';
-                            const jadwalTxt = primaryKelas
-                                ? (primaryKelas.jadwal || (primaryKelas.hari ? `${primaryKelas.hari}, ${primaryKelas.jam || ''} WIB` : 'Sesuai Jadwal'))
-                                : 'Sesuai Jadwal';
-                            const ruangTxt = primaryKelas ? (primaryKelas.ruangan || 'Lab Komputer CWE') : '-';
+                            const jadwalTxt = formatJadwal(primaryKelas);
+                            const ruangTxt = primaryKelas && primaryKelas.ruangan ? String(primaryKelas.ruangan).trim() : '';
                             return `
                             <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition space-y-4 flex flex-col justify-between">
                                 <div class="space-y-3">
@@ -219,20 +217,70 @@ function renderAdminCourses() {
                                         </div>
                                     </div>
 
-                                    <div class="p-3 rounded-xl bg-slate-50/80 border border-slate-100 space-y-2 text-xs">
-                                        <div class="flex items-center gap-2">
-                                            <div class="w-6 h-6 rounded-md bg-blue-100 text-blue-700 flex items-center justify-center text-[10px] shrink-0 font-bold">
-                                                <i class="fa-solid fa-chalkboard-user"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <span class="text-[10px] text-slate-400 block font-medium">Dosen Pengampu:</span>
-                                                <span class="font-bold text-slate-800 truncate block">${dosenNama}</span>
-                                            </div>
+                                    <!-- Daftar Kelas / Rombel yang Dibuka -->
+                                    <div class="space-y-2 pt-1">
+                                        <div class="flex items-center justify-between text-[11px] font-bold text-slate-700">
+                                            <span><i class="fa-solid fa-door-open text-maroon-600 mr-1"></i> Kelas & Jadwal Perkuliahan (${kelasMK.length})</span>
                                         </div>
-                                        <div class="flex items-center justify-between pt-2 border-t border-slate-200/60 text-[11px] text-slate-500">
-                                            <span><i class="fa-regular fa-clock mr-1 text-slate-400"></i> ${jadwalTxt}</span>
-                                            <span class="font-medium text-slate-600"><i class="fa-solid fa-location-dot mr-1 text-slate-400"></i> ${ruangTxt}</span>
-                                        </div>
+                                        ${kelasMK.length === 0 ? `
+                                            <div class="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-slate-400 text-xs">
+                                                <i class="fa-solid fa-circle-info mr-1"></i> Belum ada kelas yang dibuka untuk mata kuliah ini.
+                                            </div>
+                                        ` : `
+                                            <div class="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+                                                ${kelasMK.map(k => {
+                                                    const kDosen = k.dosen_nama || 'Belum Ditentukan';
+                                                    const kJadwal = formatJadwal(k);
+                                                    const kRuang = k.ruangan ? String(k.ruangan).trim() : '';
+                                                    const kLabel = k.angkatan_nama || k.nama_kelas;
+                                                    return `
+                                                    <div class="p-3 rounded-xl bg-slate-50/90 border border-slate-200 hover:border-maroon-200 transition space-y-2 text-xs">
+                                                        <div class="flex items-center justify-between gap-2">
+                                                            <div class="flex items-center gap-1.5 min-w-0">
+                                                                <span class="px-2 py-0.5 rounded-md bg-maroon-600 text-white font-extrabold text-[10px] tracking-wide shrink-0">
+                                                                    ${k.nama_kelas}
+                                                                </span>
+                                                                ${kLabel && kLabel !== k.nama_kelas ? `
+                                                                    <span class="text-slate-500 font-semibold text-[10px] truncate">
+                                                                        (${kLabel})
+                                                                    </span>
+                                                                ` : ''}
+                                                            </div>
+                                                            ${isAdmin ? `
+                                                            <div class="flex items-center gap-1 shrink-0">
+                                                                <button onclick="openModalEditMatkul(${mk.id}, ${k.id})" 
+                                                                    title="Edit Dosen & Jadwal Kelas ${k.nama_kelas}"
+                                                                    class="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 hover:text-amber-800 border border-amber-200 rounded-lg text-[10px] font-bold flex items-center gap-1 transition shadow-2xs">
+                                                                    <i class="fa-regular fa-pen-to-square"></i> Edit Kelas
+                                                                </button>
+                                                                <button onclick="confirmDeleteClass(${k.id}, '${(k.nama_kelas || '').replace(/'/g, "\\'")}')" 
+                                                                    title="Hapus Kelas ${k.nama_kelas}"
+                                                                    class="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition text-[11px]">
+                                                                    <i class="fa-regular fa-trash-can"></i>
+                                                                </button>
+                                                            </div>
+                                                            ` : ''}
+                                                        </div>
+
+                                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px] pt-1.5 border-t border-slate-200/60">
+                                                            <div class="flex items-center gap-1.5 text-slate-700 truncate" title="Dosen: ${kDosen}">
+                                                                <i class="fa-solid fa-chalkboard-user text-blue-600 text-[10px] shrink-0"></i>
+                                                                <span class="truncate font-medium">${kDosen}</span>
+                                                            </div>
+                                                            <div class="flex items-center justify-start sm:justify-end gap-1.5 text-slate-600 flex-wrap">
+                                                                ${kJadwal 
+                                                                    ? `<span class="font-medium text-slate-700"><i class="fa-regular fa-clock text-slate-400 mr-1"></i>${kJadwal}</span>`
+                                                                    : `<span class="text-amber-600 italic font-medium"><i class="fa-solid fa-calendar-exclamation mr-1"></i>Belum Terjadwal</span>`}
+                                                                ${kRuang 
+                                                                    ? `<span class="bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[10px] text-slate-600"><i class="fa-solid fa-location-dot text-slate-400 mr-1"></i>${kRuang}</span>` 
+                                                                    : ''}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    `;
+                                                }).join("")}
+                                            </div>
+                                        `}
                                     </div>
                                 </div>
 
@@ -243,8 +291,8 @@ function renderAdminCourses() {
                                             <i class="fa-solid fa-plus"></i> Buka Kelas
                                         </button>
                                         <button onclick="openModalEditMatkul(${mk.id})" 
-                                            class="px-3 py-1.5 bg-maroon-50 hover:bg-maroon-100 text-maroon-700 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition">
-                                            <i class="fa-regular fa-pen-to-square"></i> Edit
+                                            class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition">
+                                            <i class="fa-regular fa-pen-to-square"></i> Edit Mata Kuliah
                                         </button>
                                         <button onclick="openModalDeleteMatkul(${mk.id})" 
                                             class="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition">
@@ -419,7 +467,7 @@ async function handleSaveAddMatkul() {
 // -------------------------------------------------------------
 // MODAL EDIT MATA KULIAH & ATUR DOSEN PENGAMPU
 // -------------------------------------------------------------
-function openModalEditMatkul(mkId) {
+function openModalEditMatkul(mkId, targetKelasId = null) {
     if (appData.currentUser.role !== 'admin') {
         showToast("Akses ditolak: Hanya Administrator yang dapat mengubah data mata kuliah.", "error");
         return;
@@ -433,11 +481,16 @@ function openModalEditMatkul(mkId) {
 
     const dosenList = getDosenOptions();
     const kelasMK = getKelasByMatkul(mk.id);
-    const primaryKelas = kelasMK[0] || null;
-    const initialDosenId = primaryKelas ? primaryKelas.dosen_id : mk.dosen_id;
-    const initialHari = primaryKelas ? primaryKelas.hari : mk.hari;
-    const initialJam = primaryKelas ? primaryKelas.jam : mk.jam;
-    const initialRuang = primaryKelas ? primaryKelas.ruangan : (mk.ruang || mk.ruangan);
+    const selectedKelas = targetKelasId !== null
+        ? (kelasMK.find(k => Number(k.id) === Number(targetKelasId)) || kelasMK[0] || null)
+        : (kelasMK[0] || null);
+
+    const initialDosenId = selectedKelas ? selectedKelas.dosen_id : mk.dosen_id;
+    const initialHari = selectedKelas ? selectedKelas.hari : mk.hari;
+    // Jangan mengarang jam: bila kelas belum terjadwal, biarkan kosong (honest empty state).
+    const initialJamPair = parseJamKelas(selectedKelas) || { mulai: '', selesai: '' };
+    const initialRuang = selectedKelas ? selectedKelas.ruangan : (mk.ruang || mk.ruangan);
+    const initialNamaKelas = selectedKelas ? selectedKelas.nama_kelas : '';
     const noKelas = kelasMK.length === 0;
     const kelasFieldsDisabled = noKelas ? 'disabled' : '';
 
@@ -452,7 +505,7 @@ function openModalEditMatkul(mkId) {
                     </div>
                     <div>
                         <h3 class="font-bold text-slate-800 text-sm">Edit Mata Kuliah & Atur Dosen Pengampu</h3>
-                        <p class="text-[11px] text-slate-400">Perbarui kurikulum atau atur Dosen Pengampu</p>
+                        <p class="text-[11px] text-slate-400">Perbarui kurikulum mata kuliah dan atur dosen/jadwal tiap kelas</p>
                     </div>
                 </div>
                 <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 p-1"><i class="fa-solid fa-xmark"></i></button>
@@ -460,18 +513,25 @@ function openModalEditMatkul(mkId) {
 
             <form onsubmit="event.preventDefault(); handleSaveEditMatkul(${mk.id}); return false;" class="space-y-3.5 text-xs">
                 ${kelasMK.length > 0 ? `
-                <div class="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <label class="block font-bold text-slate-700 mb-1">
-                        <i class="fa-solid fa-door-open text-maroon-600 mr-1"></i> Pilih Kelas yang Diatur
-                    </label>
-                    <select id="mk-edit-kelas" onchange="handleEditMatkulKelasChange(${mk.id})" class="w-full p-2.5 border border-slate-300 rounded-xl bg-white font-medium focus:ring-2 focus:ring-maroon-500">
-                        ${kelasMK.map((k, idx) => `
-                            <option value="${k.id}" ${idx === 0 ? 'selected' : ''}>
-                                ${k.angkatan_nama || k.nama_kelas} - ${k.nama_kelas || ''} (${k.semester_nama || 'Semester aktif'})
-                            </option>
-                        `).join("")}
-                    </select>
-                    <p class="text-[10px] text-slate-500 mt-1">Dosen dan jadwal di bawah berlaku untuk kelas yang dipilih.</p>
+                <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                    <div>
+                        <label class="block font-bold text-slate-700 mb-1">
+                            <i class="fa-solid fa-door-open text-maroon-600 mr-1"></i> Pilih Kelas / Rombel yang Diatur
+                        </label>
+                        <select id="mk-edit-kelas" onchange="handleEditMatkulKelasChange(${mk.id})" class="w-full p-2.5 border border-slate-300 rounded-xl bg-white font-bold text-slate-800 focus:ring-2 focus:ring-maroon-500">
+                            ${kelasMK.map(k => `
+                                <option value="${k.id}" ${selectedKelas && Number(selectedKelas.id) === Number(k.id) ? 'selected' : ''}>
+                                    ${k.nama_kelas} (${k.angkatan_nama || 'Angkatan belum diatur'} - ${k.semester_nama || 'Semester belum diatur'})
+                                </option>
+                            `).join("")}
+                        </select>
+                        <p class="text-[10px] text-slate-500 mt-1">Nama kelas, dosen pengampu, dan jadwal di bawah berlaku untuk kelas yang dipilih di atas.</p>
+                    </div>
+                    <div>
+                        <label class="block font-semibold text-slate-700 mb-1">Nama Kelas / Rombel</label>
+                        <input id="mk-edit-nama-kelas" type="text" maxlength="30" value="${initialNamaKelas || ''}" required placeholder="Contoh: TRPL 2026 B" 
+                            class="w-full p-2.5 border border-slate-300 rounded-xl font-bold uppercase focus:ring-2 focus:ring-maroon-500">
+                    </div>
                 </div>
                 ` : `
                 <div class="p-3 bg-amber-50 rounded-xl border border-amber-100 text-[11px] text-amber-700 font-medium">
@@ -516,7 +576,7 @@ function openModalEditMatkul(mkId) {
         return `<option value="${d.id}" ${isSelected ? 'selected' : ''}>${d.nama} (${d.nomor_induk || d.email})</option>`;
     }).join("")}
                     </select>
-                    <p class="text-[10px] text-slate-500">Hanya dosen yang dipilih di sini yang dapat membuat & mengelola tugas untuk mata kuliah ini.</p>
+                    <p class="text-[10px] text-slate-500">Hanya dosen yang dipilih di sini yang dapat membuat & mengelola tugas untuk kelas ini.</p>
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -524,20 +584,27 @@ function openModalEditMatkul(mkId) {
                         <label class="block font-semibold text-slate-700 mb-1">Hari Perkuliahan</label>
                         <select id="mk-edit-hari" ${kelasFieldsDisabled} class="w-full p-2.5 border border-slate-300 rounded-xl bg-white focus:ring-2 focus:ring-maroon-500 disabled:bg-slate-100 disabled:text-slate-400">
                             ${['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map(h => `
-                                <option value="${h}" ${(initialHari === h || (mk.jadwal && mk.jadwal.startsWith(h))) ? 'selected' : ''}>${h}</option>
+                                <option value="${h}" ${initialHari === h ? 'selected' : ''}>${h}</option>
                             `).join("")}
                         </select>
                     </div>
-                    <div>
-                        <label class="block font-semibold text-slate-700 mb-1">Jam Perkuliahan</label>
-                        <input id="mk-edit-jam" type="text" maxlength="30" value="${initialJam || '08:00 - 10:30'}" ${kelasFieldsDisabled}
-                            class="w-full p-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-maroon-500 disabled:bg-slate-100 disabled:text-slate-400">
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <label class="block font-semibold text-slate-700 mb-1">Jam Mulai</label>
+                            <input id="mk-edit-jam-mulai" type="time" value="${initialJamPair.mulai}" ${kelasFieldsDisabled}
+                                class="w-full p-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-maroon-500 disabled:bg-slate-100 disabled:text-slate-400">
+                        </div>
+                        <div>
+                            <label class="block font-semibold text-slate-700 mb-1">Jam Selesai</label>
+                            <input id="mk-edit-jam-selesai" type="time" value="${initialJamPair.selesai}" ${kelasFieldsDisabled}
+                                class="w-full p-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-maroon-500 disabled:bg-slate-100 disabled:text-slate-400">
+                        </div>
                     </div>
                 </div>
 
                 <div>
                     <label class="block font-semibold text-slate-700 mb-1">Ruangan / Laboratorium</label>
-                    <input id="mk-edit-ruangan" type="text" maxlength="50" value="${initialRuang || 'Lab Komputer CWE'}" ${kelasFieldsDisabled}
+                    <input id="mk-edit-ruangan" type="text" maxlength="50" value="${initialRuang || ''}" placeholder="Contoh: Lab Komputer 1" ${kelasFieldsDisabled}
                         class="w-full p-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-maroon-500 disabled:bg-slate-100 disabled:text-slate-400">
                 </div>
 
@@ -565,13 +632,19 @@ function handleEditMatkulKelasChange(mkId) {
     const kelas = getKelasByMatkul(mkId).find(k => Number(k.id) === Number(kelasEl.value));
     if (!kelas) return;
 
+    const namaKelasEl = document.getElementById("mk-edit-nama-kelas");
     const dosenEl = document.getElementById("mk-edit-dosen");
     const hariEl = document.getElementById("mk-edit-hari");
-    const jamEl = document.getElementById("mk-edit-jam");
+    const mulaiEl = document.getElementById("mk-edit-jam-mulai");
+    const selesaiEl = document.getElementById("mk-edit-jam-selesai");
     const ruangEl = document.getElementById("mk-edit-ruangan");
-    if (dosenEl && kelas.dosen_id) dosenEl.value = String(kelas.dosen_id);
-    if (hariEl && kelas.hari) hariEl.value = kelas.hari;
-    if (jamEl) jamEl.value = kelas.jam || '';
+
+    if (namaKelasEl) namaKelasEl.value = kelas.nama_kelas || '';
+    if (dosenEl) dosenEl.value = kelas.dosen_id ? String(kelas.dosen_id) : '';
+    const jamPair = parseJamKelas(kelas);
+    if (mulaiEl) mulaiEl.value = jamPair ? jamPair.mulai : '';
+    if (selesaiEl) selesaiEl.value = jamPair ? jamPair.selesai : '';
+    if (hariEl) hariEl.value = kelas.hari || 'Senin';
     if (ruangEl) ruangEl.value = kelas.ruangan || '';
 }
 
@@ -586,11 +659,24 @@ async function handleSaveEditMatkul(mkId) {
     const dosenEl = document.getElementById("mk-edit-dosen");
     const dosen_id = dosenEl && dosenEl.value ? parseInt(dosenEl.value) : null;
     const hari = document.getElementById("mk-edit-hari").value.trim();
-    const jam = document.getElementById("mk-edit-jam").value.trim();
+    const jamMulai = document.getElementById("mk-edit-jam-mulai").value;
+    const jamSelesai = document.getElementById("mk-edit-jam-selesai").value;
     const ruangan = document.getElementById("mk-edit-ruangan").value.trim();
     const deskripsi = document.getElementById("mk-edit-deskripsi").value.trim();
     const kelasEl = document.getElementById("mk-edit-kelas");
     const kelas_id = kelasEl && kelasEl.value ? parseInt(kelasEl.value) : null;
+    const namaKelasEl = document.getElementById("mk-edit-nama-kelas");
+    const nama_kelas = namaKelasEl ? namaKelasEl.value.trim() : '';
+
+    // Jadwal opsional: boleh kosong (belum terjadwal), tapi bila diisi harus lengkap & valid.
+    const adaJam = !!jamMulai || !!jamSelesai;
+    if (kelas_id && adaJam && (!jamMulai || !jamSelesai || toMinutes(jamSelesai) <= toMinutes(jamMulai))) {
+        showToast("Lengkapi jam mulai dan jam selesai (jam selesai harus setelah jam mulai)!", "error");
+        return;
+    }
+    const jam = jamMulai && jamSelesai ? `${jamMulai} - ${jamSelesai}` : '';
+    // Hari hanya dikirim bila jam benar-benar diisi; kelas tanpa jam = belum terjadwal.
+    const hariFinal = jam ? hari : '';
 
     if (!Validator.isValidLength(kode, 2, 20)) {
         showToast("Kode mata kuliah harus antara 2 hingga 20 karakter!", "error");
@@ -612,8 +698,11 @@ async function handleSaveEditMatkul(mkId) {
         sks,
         semester_paket,
         dosen_id,
-        hari,
+        nama_kelas,
+        hari: hariFinal,
         jam,
+        jam_mulai: jamMulai || null,
+        jam_selesai: jamSelesai || null,
         ruangan,
         deskripsi,
         kelas_id
@@ -630,16 +719,19 @@ async function handleSaveEditMatkul(mkId) {
         if (!kelas_id) return;
         const kelas = getKelasByMatkul(mkId).find(k => Number(k.id) === Number(kelas_id));
         if (!kelas) return;
+        if (nama_kelas) kelas.nama_kelas = nama_kelas;
         kelas.dosen_id = dosen_id;
         kelas.dosen_nama = selectedDosen ? selectedDosen.nama : 'Belum Ditentukan';
         kelas.nama_mk = nama;
         kelas.kode_mk = kode;
         kelas.sks = sks;
         kelas.semester_paket = semester_paket;
-        kelas.hari = hari;
-        kelas.jam = jam;
-        kelas.ruangan = ruangan;
-        kelas.jadwal = `${hari}, ${jam} WIB`;
+        kelas.hari = hariFinal || null;
+        kelas.jam = jam || null;
+        kelas.jam_mulai = jamMulai || null;
+        kelas.jam_selesai = jamSelesai || null;
+        kelas.ruangan = ruangan || null;
+        kelas.jadwal = formatJadwal(kelas);
     };
 
     try {
@@ -656,14 +748,46 @@ async function handleSaveEditMatkul(mkId) {
 
         applyLocal();
         closeModal();
-        renderApp();
+        await loadAppData();
         showToast(`Mata kuliah "${nama}" berhasil diperbarui!`, "success");
     } catch (err) {
-        applyLocal();
-        closeModal();
-        renderApp();
-        showToast(`Mata kuliah "${nama}" berhasil diperbarui di memori.`, "success");
+        showToast("Gagal menyimpan perubahan ke server. Perubahan tidak dikirim.", "error");
     }
+}
+
+// -------------------------------------------------------------
+// KONFIRMASI HAPUS KELAS / ROMBEL PERKULIAHAN
+// -------------------------------------------------------------
+function confirmDeleteClass(classId, className) {
+    if (appData.currentUser.role !== 'admin') {
+        showToast("Akses ditolak: Hanya Administrator yang dapat menghapus kelas.", "error");
+        return;
+    }
+    openConfirmModal({
+        title: "Konfirmasi Hapus Kelas",
+        message: `Apakah Anda yakin ingin menghapus kelas <strong>"${className}"</strong>?<br><br>Seluruh jadwal dan enrolmen mahasiswa pada kelas ini akan ikut terhapus secara permanen.`,
+        confirmText: "Ya, Hapus Kelas",
+        confirmColor: "bg-rose-600 hover:bg-rose-700",
+        onConfirm: async () => {
+            try {
+                const res = await fetch("api.php?action=delete_class", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ id: classId })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(data.message || "Kelas berhasil dihapus!", "success");
+                    await loadAppData();
+                    renderApp();
+                } else {
+                    showToast(data.message || "Gagal menghapus kelas.", "error");
+                }
+            } catch (e) {
+                showToast("Terjadi kesalahan saat menghubungi server.", "error");
+            }
+        }
+    });
 }
 
 // -------------------------------------------------------------

@@ -109,6 +109,7 @@ $user = getCurrentUser();
     <script src="js/courses.js?v=<?= filemtime('js/courses.js') ?>"></script>
     <script src="js/semesters.js?v=<?= filemtime('js/semesters.js') ?>"></script>
     <script src="js/classes.js?v=<?= filemtime('js/classes.js') ?>"></script>
+    <script src="js/schedule.js?v=<?= filemtime('js/schedule.js') ?>"></script>
     <script src="js/assignments.js?v=<?= filemtime('js/assignments.js') ?>"></script>
     <script src="app.js?v=<?= filemtime('app.js') ?>"></script>
 </body>

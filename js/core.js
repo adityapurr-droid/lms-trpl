@@ -15,7 +15,7 @@
 // ==========================================
 let appData = {
     currentUser: window.AUTH_USER || null,
-    semesterAktif: "Ganjil 2024/2025",
+    semesterAktif: "",
     dbConnected: window.DB_STATUS ? window.DB_STATUS.connected : false,
     dbError: window.DB_STATUS ? window.DB_STATUS.error : null,
     users: [],
@@ -76,6 +76,216 @@ let courseFilter = {
 let materiFilter = {
     semester: "all"
 };
+
+// Filter Modul Jadwal Kuliah (Semua Role)
+let scheduleFilter = {
+    semesterId: "all",
+    angkatan: "all",
+    dosen: "all",
+    ruangan: "all"
+};
+
+// ==========================================
+// HELPERS PENJADWALAN KELAS TERINTEGRASI
+// (Satu sumber kebenaran format jadwal di seluruh sistem)
+// ==========================================
+const HARI_LIST = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
+function getHariIni() {
+    try {
+        return new Date().toLocaleDateString('id-ID', { weekday: 'long' });
+    } catch (e) {
+        return '';
+    }
+}
+
+// Dukung field terstruktur (jam_mulai/jam_selesai) maupun format lama "08:00 - 10:30"
+function parseJamKelas(kelas) {
+    if (!kelas) return null;
+    if (kelas.jam_mulai && kelas.jam_selesai) {
+        const mulai = String(kelas.jam_mulai).slice(0, 5);
+        const selesai = String(kelas.jam_selesai).slice(0, 5);
+        if (/^\d{2}:\d{2}$/.test(mulai) && /^\d{2}:\d{2}$/.test(selesai)) {
+            return { mulai, selesai };
+        }
+    }
+    const m = String(kelas.jam || '').match(/(\d{1,2}):(\d{2})\s*[-\u2013]\s*(\d{1,2}):(\d{2})/);
+    if (m) {
+        return {
+            mulai: `${m[1].padStart(2, '0')}:${m[2]}`,
+            selesai: `${m[3].padStart(2, '0')}:${m[4]}`
+        };
+    }
+    return null;
+}
+
+function toMinutes(hhmm) {
+    const parts = String(hhmm).split(':').map(Number);
+    return (parts[0] || 0) * 60 + (parts[1] || 0);
+}
+
+function formatJamKelas(kelas) {
+    const j = parseJamKelas(kelas);
+    return j ? `${j.mulai}\u2013${j.selesai} WIB` : null;
+}
+
+function formatJadwal(kelas) {
+    if (!kelas) return null;
+    const jam = formatJamKelas(kelas);
+    if (kelas.hari && jam) return `${kelas.hari}, ${jam}`;
+    if (kelas.hari) return `${kelas.hari} (jam belum diatur)`;
+    return null;
+}
+
+// Baris info jadwal & ruangan seragam untuk seluruh tampilan.
+// opts: { variant: 'light' | 'dark', showRuangan: bool }
+function renderJadwalInfoBar(kelas, opts = {}) {
+    const variant = opts.variant || 'light';
+    const iconCls = variant === 'dark' ? 'text-maroon-400' : 'text-slate-400';
+    const txtCls = variant === 'dark' ? 'text-slate-300' : 'text-slate-600';
+    const showRuangan = opts.showRuangan !== false;
+
+    const jadwalTxt = formatJadwal(kelas);
+    const ruangTxt = kelas && kelas.ruangan ? String(kelas.ruangan).trim() : '';
+
+    const jadwalEl = jadwalTxt
+        ? `<span class="${txtCls}"><i class="fa-regular fa-clock mr-1 ${iconCls}"></i> ${jadwalTxt}</span>`
+        : `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200"><i class="fa-solid fa-calendar-exclamation mr-1"></i> Belum Terjadwal</span>`;
+
+    const ruangEl = showRuangan
+        ? (ruangTxt
+            ? `<span class="${txtCls}"><i class="fa-solid fa-location-dot mr-1 ${iconCls}"></i> ${ruangTxt}</span>`
+            : `<span class="${txtCls} italic"><i class="fa-solid fa-location-dot mr-1 ${iconCls}"></i> Ruangan belum diatur</span>`)
+        : '';
+
+    return `${jadwalEl}${ruangEl ? ' ' + ruangEl : ''}`;
+}
+
+// Deteksi bentrok jadwal sisi klien (validasi final tetap di server).
+// Bentrok = hari sama + jam overlap pada semester sama dengan dosen sama,
+// ruangan sama, atau angkatan sama.
+function detectScheduleConflicts(kelasList) {
+    const list = (kelasList || []).filter(k => k && k.hari && parseJamKelas(k));
+    const conflicts = [];
+    for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+            const a = list[i], b = list[j];
+            if (String(a.hari) !== String(b.hari)) continue;
+            if (Number(a.semester_id || 0) !== Number(b.semester_id || 0)) continue;
+            const ja = parseJamKelas(a), jb = parseJamKelas(b);
+            if (!ja || !jb) continue;
+            const overlap = toMinutes(ja.mulai) < toMinutes(jb.selesai) && toMinutes(jb.mulai) < toMinutes(ja.selesai);
+            if (!overlap) continue;
+            let tipe = null;
+            if (Number(a.dosen_id) === Number(b.dosen_id)) {
+                tipe = 'dosen sama';
+            } else if (String(a.ruangan || '').trim().toLowerCase() && String(a.ruangan || '').trim().toLowerCase() === String(b.ruangan || '').trim().toLowerCase()) {
+                tipe = 'ruangan sama';
+            } else if (a.angkatan_id && Number(a.angkatan_id) === Number(b.angkatan_id)) {
+                tipe = 'angkatan sama';
+            }
+            if (tipe) conflicts.push({ tipe, a, b });
+        }
+    }
+    return conflicts;
+}
+
+// Kelas yang relevan untuk penjadwalan sesuai role:
+// admin = semua, dosen = kelas yang diampu, mahasiswa = enrolmen / angkatan.
+function getJadwalScopeKelas() {
+    const user = appData.currentUser || {};
+    const all = appData.kelasList || [];
+    if (user.role === 'dosen') {
+        return all.filter(k => Number(k.dosen_id) === Number(user.id));
+    }
+    if (user.role === 'mahasiswa') {
+        const fullUser = (appData.users || []).find(u => Number(u.id) === Number(user.id)) || user;
+        const myAngkatanId = fullUser.angkatan_id || user.angkatan_id || null;
+        return all.filter(k =>
+            (k.mahasiswa || []).some(m => Number(m.id) === Number(user.id)) ||
+            (myAngkatanId && k.angkatan_id && Number(k.angkatan_id) === Number(myAngkatanId))
+        );
+    }
+    return all;
+}
+
+// Widget "Jadwal Hari Ini" — komponen & posisi seragam di dashboard semua role.
+function renderJadwalHariIniWidget(role, opts = {}) {
+    const compact = !!opts.compact;
+    const batasSesi = compact ? 3 : 4;
+    const hariIni = getHariIni();
+    const scoped = getJadwalScopeKelas();
+    const sesi = scoped
+        .filter(k => String(k.hari || '') === String(hariIni) && parseJamKelas(k))
+        .sort((a, b) => toMinutes(parseJamKelas(a).mulai) - toMinutes(parseJamKelas(b).mulai));
+
+    const terjadwal = scoped.filter(k => k.hari && parseJamKelas(k)).length;
+    const belum = scoped.length - terjadwal;
+    const konflik = detectScheduleConflicts(scoped);
+    const konflikIds = new Set();
+    konflik.forEach(c => { konflikIds.add(Number(c.a.id)); konflikIds.add(Number(c.b.id)); });
+
+    const judul = role === 'admin' ? 'Jadwal Perkuliahan Hari Ini'
+        : role === 'dosen' ? 'Jadwal Mengajar Hari Ini'
+            : 'Jadwal Kuliah Hari Ini';
+    const tanggalIndo = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+    return `
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm ${compact ? 'p-4' : 'p-5'} space-y-4 h-full flex flex-col">
+        <div class="flex items-start justify-between flex-wrap gap-2">
+            <div class="flex items-center gap-2.5 min-w-0">
+                <div class="w-9 h-9 rounded-xl bg-maroon-50 text-maroon-600 flex items-center justify-center shrink-0">
+                    <i class="fa-solid fa-table-cells"></i>
+                </div>
+                <div class="min-w-0">
+                    <h2 class="text-sm font-bold text-slate-800">${judul}</h2>
+                    <p class="text-[11px] text-slate-400">${tanggalIndo}</p>
+                </div>
+            </div>
+            <button onclick="setTab('schedule')" class="text-xs font-semibold text-maroon-600 hover:underline shrink-0">
+                ${compact ? 'Jadwal Lengkap' : 'Buka Jadwal Lengkap'} &rarr;
+            </button>
+        </div>
+
+        ${role === 'admin' ? `
+        <div class="flex items-center gap-2 flex-wrap">
+            <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
+                ${terjadwal} kelas terjadwal
+            </span>
+            ${belum > 0 ? `
+            <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-100">
+                ${belum} belum terjadwal
+            </span>` : ''}
+            ${konflik.length > 0 ? `
+            <span class="px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-100">
+                <i class="fa-solid fa-triangle-exclamation mr-1"></i> ${konflik.length} bentrok terdeteksi
+            </span>` : ''}
+        </div>` : ''}
+
+        ${sesi.length === 0 ? `
+        <p class="text-xs text-slate-400 italic py-3 text-center flex-1 flex items-center justify-center">Tidak ada perkuliahan terjadwal untuk hari ini.</p>
+        ` : `
+        <div class="space-y-2 flex-1">
+            ${sesi.slice(0, batasSesi).map(k => {
+        const jam = parseJamKelas(k);
+        const bentrok = konflikIds.has(Number(k.id));
+        return `
+            <div class="flex items-center justify-between gap-3 ${compact ? 'p-2.5' : 'p-3'} rounded-xl border ${bentrok ? 'border-rose-200 bg-rose-50/50' : 'border-slate-100 bg-slate-50'} text-xs">
+                <div class="flex items-center gap-3 min-w-0">
+                    <span class="font-mono font-bold text-maroon-700 shrink-0">${jam.mulai}&ndash;${jam.selesai}</span>
+                    <div class="min-w-0">
+                        <span class="font-bold text-slate-800 block truncate">${k.nama_mk || 'Mata Kuliah'} ${k.kode_mk ? `<span class="font-mono font-normal text-slate-400">(${k.kode_mk})</span>` : ''}</span>
+                        <span class="text-[11px] text-slate-500 block truncate">${role === 'dosen' ? (k.nama_kelas || '-') : (k.dosen_nama || '')} &bull; ${k.ruangan || 'Ruangan belum diatur'}</span>
+                    </div>
+                </div>
+                ${bentrok ? '<i class="fa-solid fa-triangle-exclamation text-rose-500 shrink-0" title="Jadwal bentrok"></i>' : ''}
+            </div>`;
+    }).join("")}
+            ${sesi.length > batasSesi ? `<p class="text-[11px] text-slate-400 text-center">+${sesi.length - batasSesi} sesi lainnya tersedia di jadwal lengkap</p>` : ''}
+        </div>`}
+    </div>
+    `;
+}
 
 function getActiveSemester() {
     return (appData.semesters || []).find(s => Number(s.is_aktif) === 1) || null;
@@ -441,7 +651,13 @@ function applyBootstrapData(result) {
     if (result.currentUser) appData.currentUser = result.currentUser;
     appData.dbConnected = !!result.db_connected;
     appData.dosenList = (result.dosenList && result.dosenList.length) ? result.dosenList : [];
-    if (result.activeSemester) appData.semesterAktif = result.activeSemester;
+    if (result.activeSemester) {
+        appData.semesterAktif = result.activeSemester;
+    } else {
+        // Tidak ada semester aktif di DB: tampilkan status jujur, bukan nama semester karangan.
+        const activeSem = (result.semesters || []).find(s => Number(s.is_aktif) === 1);
+        appData.semesterAktif = activeSem ? activeSem.nama : 'Belum ada semester aktif';
+    }
     if (result.semesters) appData.semesters = result.semesters;
 
     appData.users = result.users || [];
@@ -718,18 +934,21 @@ function renderSidebar() {
             { id: "dashboard", label: "Dashboard", icon: "fa-chart-pie" },
             { id: "users", label: "Manajemen Pengguna", icon: "fa-users-gear", badge: appData.users.length || 0 },
             { id: "classes", label: "Manajemen Kelas", icon: "fa-users-line", badge: (appData.angkatanList || []).length || 0 },
+            { id: "schedule", label: "Jadwal Kuliah", icon: "fa-table-cells", badge: getJadwalScopeKelas().filter(k => k.hari && parseJamKelas(k)).length },
             { id: "courses", label: "Manajemen Matakuliah", icon: "fa-book-bookmark", badge: getUniqueMataKuliah().length || 0 },
             { id: "semesters", label: "Manajemen Semester", icon: "fa-calendar-days", badge: (appData.semesters || []).length || 0 },
             { id: "settings", label: "Pengaturan Sistem", icon: "fa-sliders" }
         ],
         dosen: [
             { id: "dashboard", label: "Dashboard Dosen", icon: "fa-chart-pie" },
+            { id: "schedule", label: "Jadwal Mengajar", icon: "fa-table-cells", badge: getJadwalScopeKelas().filter(k => k.hari && parseJamKelas(k)).length },
             { id: "classes", label: "Jadwal & Kelas Saya", icon: "fa-chalkboard-user", badge: (appData.kelasList || []).filter(k => Number(k.dosen_id) === Number(user.id)).length },
             { id: "assignments", label: "Manajemen Tugas", icon: "fa-clipboard-check", badge: (appData.tugas || []).length },
             { id: "materials", label: "Manajemen Materi Kuliah", icon: "fa-file-arrow-up", badge: (appData.materi || []).length }
         ],
         mahasiswa: [
             { id: "dashboard", label: "Dashboard Mahasiswa", icon: "fa-chart-pie" },
+            { id: "schedule", label: "Jadwal Kuliah Saya", icon: "fa-table-cells", badge: getJadwalScopeKelas().filter(k => k.hari && parseJamKelas(k)).length },
             { id: "assignments", label: "Tugas Kuliah", icon: "fa-list-check", badge: (appData.tugas || []).length },
             { id: "my-courses", label: "Mata Kuliah Saya", icon: "fa-graduation-cap", badge: (appData.mataKuliah || []).length },
             { id: "my-grades", label: "Transkrip Nilai Saya", icon: "fa-award" }
@@ -849,6 +1068,10 @@ function renderMainContent() {
 
     if (currentTab === "assignments") {
         return renderAssignmentsModule();
+    }
+
+    if (currentTab === "schedule") {
+        return renderScheduleModule();
     }
 
     if (role === "admin") {

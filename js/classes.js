@@ -148,7 +148,7 @@ function renderAdminClasses() {
                                         `}
                                     </div>
                                     <p class="text-xs text-slate-600 leading-relaxed">
-                                        ${ang.keterangan || 'Rombongan Belajar Mahasiswa TRPL'}
+                                        ${ang.keterangan || 'Belum ada keterangan'}
                                     </p>
                                 </div>
                             </div>
@@ -667,22 +667,29 @@ function openModalAddClass(matkulId = null) {
                     </select>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
                         <label class="block font-semibold text-slate-700 mb-1">Hari Kuliah</label>
                         <select id="class-add-hari" class="w-full p-2.5 border border-slate-300 rounded-xl bg-white">
-                            ${['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map(h => `<option value="${h}">${h}</option>`).join("")}
+                            ${HARI_LIST.map(h => `<option value="${h}">${h}</option>`).join("")}
                         </select>
                     </div>
                     <div>
-                        <label class="block font-semibold text-slate-700 mb-1">Jam Perkuliahan</label>
-                        <input id="class-add-jam" type="text" value="08:00 - 10:30" placeholder="08:00 - 10:30" 
+                        <label class="block font-semibold text-slate-700 mb-1">Ruangan</label>
+                        <input id="class-add-ruangan" type="text" maxlength="50" value="" placeholder="Contoh: Lab Komputer 1" required
                             class="w-full p-2.5 border border-slate-300 rounded-xl">
                     </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                     <div>
-                        <label class="block font-semibold text-slate-700 mb-1">Ruangan</label>
-                        <input id="class-add-ruangan" type="text" value="Lab Komputer CWE" placeholder="Lab Komputer 1" 
-                            class="w-full p-2.5 border border-slate-300 rounded-xl">
+                        <label class="block font-semibold text-slate-700 mb-1">Jam Mulai Perkuliahan</label>
+                        <input id="class-add-jam-mulai" type="time" value="" required
+                            class="w-full p-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-maroon-500">
+                    </div>
+                    <div>
+                        <label class="block font-semibold text-slate-700 mb-1">Jam Selesai Perkuliahan</label>
+                        <input id="class-add-jam-selesai" type="time" value="" required
+                            class="w-full p-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-maroon-500">
                     </div>
                 </div>
 
@@ -715,11 +722,25 @@ async function handleSaveAddClass() {
     const dosenId   = parseInt(document.getElementById("class-add-dosen").value);
     const semId     = parseInt(document.getElementById("class-add-semester").value);
     const hari      = document.getElementById("class-add-hari").value;
-    const jam       = document.getElementById("class-add-jam").value.trim();
+    const jamMulai  = document.getElementById("class-add-jam-mulai").value;
+    const jamSelesai = document.getElementById("class-add-jam-selesai").value;
     const ruangan   = document.getElementById("class-add-ruangan").value.trim();
 
     if (!namaKelas || !angkatanId || !matkulId || !dosenId || !semId) {
         showToast("Semua kolom bertanda (*) wajib diisi!", "error");
+        return;
+    }
+
+    if (!jamMulai || !jamSelesai) {
+        showToast("Jam mulai dan jam selesai perkuliahan wajib diisi!", "error");
+        return;
+    }
+    if (toMinutes(jamSelesai) <= toMinutes(jamMulai)) {
+        showToast("Jam selesai perkuliahan harus setelah jam mulai!", "error");
+        return;
+    }
+    if (!ruangan) {
+        showToast("Ruangan perkuliahan wajib diisi!", "error");
         return;
     }
 
@@ -733,6 +754,23 @@ async function handleSaveAddClass() {
         return;
     }
 
+    // Validasi bentrok jadwal (dosen / ruangan / angkatan) sebelum menyimpan
+    const kelasBaru = {
+        id: -1, hari, jam_mulai: jamMulai, jam_selesai: jamSelesai,
+        ruangan, dosen_id: dosenId, angkatan_id: angkatanId, semester_id: semId
+    };
+    const bentrok = detectScheduleConflicts([...(appData.kelasList || []), kelasBaru])
+        .filter(c => Number(c.a.id) === -1 || Number(c.b.id) === -1);
+    if (bentrok.length) {
+        const detail = bentrok.map(c => {
+            const lain = Number(c.a.id) === -1 ? c.b : c.a;
+            return `${c.tipe}: ${lain.nama_mk} (${lain.nama_kelas || '-'}, ${formatJadwal(lain)})`;
+        }).join('; ');
+        showToast(`Jadwal bentrok — ${detail}`, "error");
+        return;
+    }
+
+    const jam = `${jamMulai} - ${jamSelesai}`;
     const payload = {
         nama_kelas: namaKelas,
         angkatan_id: angkatanId,
@@ -741,6 +779,8 @@ async function handleSaveAddClass() {
         semester_id: semId,
         hari,
         jam,
+        jam_mulai: jamMulai,
+        jam_selesai: jamSelesai,
         ruangan
     };
 
@@ -752,6 +792,9 @@ async function handleSaveAddClass() {
         });
         const data = await res.json();
         if (data.success && data.kelas) {
+            // Pastikan field terstruktur tersedia di state klien
+            data.kelas.jam_mulai = data.kelas.jam_mulai || jamMulai;
+            data.kelas.jam_selesai = data.kelas.jam_selesai || jamSelesai;
             appData.kelasList.unshift(data.kelas);
             if (data.angkatan_semester) {
                 const mapping = data.angkatan_semester;
@@ -764,7 +807,7 @@ async function handleSaveAddClass() {
             }
             refreshAngkatanSemesterCache();
             closeModal();
-            renderApp();
+            await loadAppData();
             showToast(`Kelas "${namaKelas}" berhasil dibuat!`, "success");
             return;
         } else if (!data.success) {
@@ -838,6 +881,7 @@ function renderModalManageClassStudentsContent() {
                             <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-maroon-100 text-maroon-700">Angkatan ${angkatanKelas}</span>
                         </div>
                         <p class="text-[11px] text-slate-400 mt-0.5">${k.nama_mk} (${k.kode_mk}) &bull; Dosen: ${k.dosen_nama}</p>
+                        <p class="text-[11px] text-slate-400 mt-1 flex items-center gap-3 flex-wrap">${renderJadwalInfoBar(k)}</p>
                     </div>
                 </div>
                 <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 p-1"><i class="fa-solid fa-xmark"></i></button>

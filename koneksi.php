@@ -133,14 +133,8 @@ function autoSyncDatabaseSchema($pdo) {
             // Migrasi otomatis mahasiswa berdasarkan NIM
             $pdo->exec("UPDATE `users` SET `angkatan` = 'Angkatan 2024 A' WHERE `role` = 'mahasiswa' AND (`nomor_induk` LIKE '2024%' OR `nomor_induk` LIKE '24%') AND (`angkatan` IS NULL OR `angkatan` = '')");
             $pdo->exec("UPDATE `users` SET `angkatan` = 'Angkatan 2025 A' WHERE `role` = 'mahasiswa' AND (`nomor_induk` LIKE '2025%' OR `nomor_induk` LIKE '25%') AND (`angkatan` IS NULL OR `angkatan` = '')");
-            $pdo->exec("UPDATE `users` SET `angkatan` = 'Angkatan 2024 A' WHERE `role` = 'mahasiswa' AND (`angkatan` IS NULL OR `angkatan` = '')");
         }
 
-        // Kolom target_angkatan di tabel mata_kuliah
-        $colTargetAngkatan = $pdo->query("SHOW COLUMNS FROM `mata_kuliah` LIKE 'target_angkatan'");
-        if (!$colTargetAngkatan->fetch()) {
-            $pdo->exec("ALTER TABLE `mata_kuliah` ADD COLUMN `target_angkatan` VARCHAR(50) DEFAULT 'Angkatan 2024 A' AFTER `semester_paket`, ADD COLUMN `angkatan_id` INT NULL AFTER `target_angkatan`");
-        }
 
         // Kolom angkatan_id di tabel kelas + backfill data lama
         $colKelasAngkatan = $pdo->query("SHOW COLUMNS FROM `kelas` LIKE 'angkatan_id'");
@@ -217,7 +211,7 @@ function autoSyncDatabaseSchema($pdo) {
         if (!$colSub->fetch()) {
             $pdo->exec("ALTER TABLE `submissions` 
                 ADD COLUMN `file_nama` VARCHAR(255) NOT NULL DEFAULT '',
-                ADD COLUMN `file_size` VARCHAR(50) DEFAULT '500 KB',
+                ADD COLUMN `file_size` VARCHAR(50) NULL,
                 ADD COLUMN `file_path` LONGTEXT NULL
             ");
         }
@@ -225,7 +219,7 @@ function autoSyncDatabaseSchema($pdo) {
         // 4. Cek & Tambah kolom file_size di tabel materi
         $colMat = $pdo->query("SHOW COLUMNS FROM `materi` LIKE 'file_size'");
         if (!$colMat->fetch()) {
-            $pdo->exec("ALTER TABLE `materi` ADD COLUMN `file_size` VARCHAR(50) DEFAULT '1.2 MB'");
+            $pdo->exec("ALTER TABLE `materi` ADD COLUMN `file_size` VARCHAR(50) NULL");
         }
 
         // 5. Pastikan tipe materi mendukung semua format file (PDF, DOCX, PPTX, ZIP, dll.)
@@ -255,6 +249,43 @@ function autoSyncDatabaseSchema($pdo) {
                     $upSt = $pdo->prepare("UPDATE users SET password = :p WHERE id = :id");
                     $upSt->execute(['p' => $upHash, 'id' => $ur['id']]);
                 }
+            }
+        }
+        // 7. Kolom jadwal terstruktur di tabel kelas (jam_mulai/jam_selesai)
+        //    + backfill dari format lama "HH:MM - HH:MM" + index pemeriksaan bentrok.
+        $tableKelas = $pdo->query("SHOW TABLES LIKE 'kelas'");
+        if ($tableKelas && $tableKelas->fetch()) {
+            $colJamMulai   = $pdo->query("SHOW COLUMNS FROM `kelas` LIKE 'jam_mulai'")->fetch();
+            $colJamSelesai = $pdo->query("SHOW COLUMNS FROM `kelas` LIKE 'jam_selesai'")->fetch();
+            if (!$colJamMulai) {
+                $pdo->exec("ALTER TABLE `kelas` ADD COLUMN `jam_mulai` TIME NULL AFTER `jam`");
+            }
+            if (!$colJamSelesai) {
+                $pdo->exec("ALTER TABLE `kelas` ADD COLUMN `jam_selesai` TIME NULL AFTER `jam_mulai`");
+            }
+
+            // Backfill idempoten: hanya baris lama yang belum punya jam terstruktur.
+            $legacyJamRows = $pdo->query("
+                SELECT id, jam FROM `kelas`
+                WHERE (`jam_mulai` IS NULL OR `jam_selesai` IS NULL)
+                  AND `jam` IS NOT NULL AND `jam` <> ''
+            ")->fetchAll();
+            if ($legacyJamRows) {
+                $updJam = $pdo->prepare("UPDATE `kelas` SET `jam_mulai` = :mulai, `jam_selesai` = :selesai WHERE `id` = :id");
+                foreach ($legacyJamRows as $lr) {
+                    if (preg_match('/([01]?\d|2[0-3]):([0-5]\d)\s*[-\x{2013}\x{2014}]\s*([01]?\d|2[0-3]):([0-5]\d)/u', (string)$lr['jam'], $m)) {
+                        $updJam->execute([
+                            'mulai'   => sprintf('%02d:%02d', (int)$m[1], (int)$m[2]),
+                            'selesai' => sprintf('%02d:%02d', (int)$m[3], (int)$m[4]),
+                            'id'      => (int)$lr['id'],
+                        ]);
+                    }
+                }
+            }
+
+            $idxJadwal = $pdo->query("SHOW INDEX FROM `kelas` WHERE Key_name = 'idx_jadwal'");
+            if (!$idxJadwal || !$idxJadwal->fetch()) {
+                $pdo->exec("ALTER TABLE `kelas` ADD INDEX `idx_jadwal` (`semester_id`, `hari`, `jam_mulai`)");
             }
         }
     } catch (Exception $e) {

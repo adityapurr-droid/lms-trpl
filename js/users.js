@@ -646,7 +646,7 @@ function openModalEditUser(userId) {
 
                 <div>
                     <label class="block font-semibold text-slate-700 mb-1">Program Studi</label>
-                    <input id="user-edit-prodi" type="text" maxlength="100" value="${user.prodi || 'Teknologi Rekayasa Perangkat Lunak'}" 
+                    <input id="user-edit-prodi" type="text" maxlength="100" value="${user.prodi || ''}" placeholder="Belum diatur" 
                         class="w-full p-2.5 border border-slate-300 rounded-xl bg-slate-50 text-slate-700">
                 </div>
 

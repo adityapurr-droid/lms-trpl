@@ -60,6 +60,8 @@ function renderAdminDashboard() {
             </div>
         </div>
 
+        ${renderJadwalHariIniWidget('admin')}
+
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
                 <div class="flex items-center justify-between mb-4">
@@ -174,30 +176,37 @@ function renderDosenDashboard() {
             </div>
         </div>
 
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+            ${renderJadwalHariIniWidget('dosen', { compact: true })}
+
+            <div class="bg-gradient-to-br from-maroon-800 to-maroon-900 rounded-2xl p-5 text-white shadow-sm flex flex-col justify-between gap-4 h-full">
+                <div>
+                    <div class="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center mb-3">
+                        <i class="fa-solid fa-clipboard-check text-sm"></i>
+                    </div>
+                    <h2 class="text-sm font-bold leading-snug">Kelola Penugasan &amp; Penilaian Mahasiswa</h2>
+                    <p class="text-[11px] text-maroon-100 mt-1.5 leading-relaxed">Buat tugas baru dengan berkas soal, atur deadline, atau nilai hasil kiriman mahasiswa.</p>
+                </div>
+                <button onclick="setTab('assignments'); openModalAddTugas();" class="w-full px-4 py-2.5 rounded-xl bg-white text-maroon-800 font-bold text-xs hover:bg-maroon-50 transition shadow-sm">
+                    <i class="fa-solid fa-plus mr-1"></i> Buat Tugas Baru
+                </button>
+            </div>
+        </div>
+
         <!-- Info Akademik & Semester (Read-Only untuk Dosen) -->
-        <div class="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
+        <div class="w-full bg-slate-50 border border-slate-200 rounded-2xl p-5 flex items-center justify-between flex-wrap gap-3">
             <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-maroon-100 text-maroon-700 flex items-center justify-center text-lg">
+                <div class="w-10 h-10 rounded-xl bg-maroon-100 text-maroon-700 flex items-center justify-center text-lg shrink-0">
                     <i class="fa-solid fa-circle-info"></i>
                 </div>
                 <div>
                     <h4 class="text-xs font-bold text-slate-800">Status Tahun Akademik</h4>
-                    <p class="text-[11px] text-slate-500">Tahun Akademik aktif terdaftar di sistem: <strong class="text-maroon-700">${appData.semesterAktif}</strong> (Total ${appData.semesters.length} semester terdata)</p>
+                    <p class="text-[11px] text-slate-500">Semester aktif: <strong class="text-maroon-700">${appData.semesterAktif}</strong> &bull; Total ${appData.semesters.length} semester terdata</p>
                 </div>
             </div>
             <span class="text-[11px] font-medium text-slate-400 bg-white px-3 py-1.5 rounded-lg border border-slate-200">
                 <i class="fa-solid fa-lock text-[10px] mr-1 text-slate-400"></i> Dikelola oleh Administrator
             </span>
-        </div>
-
-        <div class="bg-gradient-to-r from-maroon-800 to-maroon-900 rounded-2xl p-6 text-white shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
-            <div>
-                <h2 class="text-base font-bold">Kelola Penugasan & Penilaian Mahasiswa</h2>
-                <p class="text-xs text-maroon-100 mt-1">Buat instrumen tugas baru dengan berkas soal lampiran, edit deadline, atau nilai hasil kiriman mahasiswa.</p>
-            </div>
-            <button onclick="setTab('assignments'); openModalAddTugas();" class="px-4 py-2.5 rounded-xl bg-white text-maroon-800 font-bold text-xs hover:bg-maroon-50 transition shadow shrink-0">
-                <i class="fa-solid fa-plus mr-1"></i> Buat Tugas Baru
-            </button>
         </div>
     </div>
     `;
@@ -382,10 +391,9 @@ function renderDosenClasses() {
                             <h2 class="text-lg font-bold text-white pt-1">
                                 ${selectedClass.nama_mk} <span class="text-xs font-mono font-normal text-maroon-300">(${selectedClass.kode_mk})</span>
                             </h2>
-                            <p class="text-xs text-slate-300 flex items-center gap-3 pt-1">
-                                <span><i class="fa-regular fa-clock text-maroon-400 mr-1"></i> ${selectedClass.jadwal}</span>
-                                <span><i class="fa-solid fa-location-dot text-maroon-400 mr-1"></i> ${selectedClass.ruangan}</span>
-                                <span><i class="fa-solid fa-award text-maroon-400 mr-1"></i> ${selectedClass.sks || 3} SKS</span>
+                            <p class="text-xs text-slate-300 flex items-center gap-3 flex-wrap pt-1">
+                                ${renderJadwalInfoBar(selectedClass, { variant: 'dark' })}
+                                <span class="text-slate-300"><i class="fa-solid fa-award text-maroon-400 mr-1"></i> ${selectedClass.sks || 3} SKS</span>
                             </p>
                         </div>
 
@@ -489,7 +497,7 @@ function renderDosenClasses() {
                                                                     <p class="text-[10px] font-mono text-slate-400">${sub.mhsNim}</p>
                                                                 </td>
                                                                 <td class="p-3 text-slate-500 text-[11px]">
-                                                                    ${sub.submittedAt || 'Tepat Waktu'}
+                                                                    ${sub.submittedAt || 'Waktu pengumpulan tidak tercatat'}
                                                                 </td>
                                                                 <td class="p-3">
                                                                     ${sub.fileJawaban && sub.fileJawaban.nama ? `
@@ -754,6 +762,8 @@ function renderMahasiswaDashboard() {
             </button>
         </div>
 
+        ${renderJadwalHariIniWidget('mahasiswa')}
+
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-3">
                 <div class="flex items-center justify-between">
@@ -824,6 +834,8 @@ function renderMahasiswaCourses() {
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 ${appData.mataKuliah.map(mk => {
         const materials = appData.materi.filter(m => m.matkulId === mk.id);
+        // Tampilkan jadwal kelas yang benar-benar diikuti mahasiswa (enrolmen/angkatan), bukan kelas angkatan lain
+        const primaryKelas = getJadwalScopeKelas().find(k => Number(k.mata_kuliah_id) === Number(mk.id)) || null;
         return `
                     <div class="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
                         <div class="flex justify-between items-start">
@@ -831,6 +843,7 @@ function renderMahasiswaCourses() {
                                 <span class="text-xs font-mono font-bold text-maroon-600 bg-maroon-50 px-2 py-0.5 rounded">${mk.kode}</span>
                                 <h2 class="text-sm font-bold text-slate-800 mt-1">${mk.nama}</h2>
                                 <p class="text-xs text-slate-500 mt-0.5"><i class="fa-solid fa-chalkboard-user mr-1 text-slate-400"></i> ${mk.dosen}</p>
+                                <p class="text-xs text-slate-500 mt-1 flex items-center gap-3 flex-wrap">${renderJadwalInfoBar(primaryKelas)}</p>
                             </div>
                             <span class="text-xs font-bold text-slate-600">${mk.sks} SKS</span>
                         </div>

@@ -64,8 +64,6 @@ CREATE TABLE IF NOT EXISTS `mata_kuliah` (
     `nama_mk` VARCHAR(100) NOT NULL,
     `sks` INT NOT NULL DEFAULT 3,
     `semester_paket` INT NOT NULL,
-    `target_angkatan` VARCHAR(50) DEFAULT 'Angkatan 2024 A' COMMENT 'Pilihan Angkatan Target',
-    `angkatan_id` INT NULL,
     `deskripsi` TEXT,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -80,9 +78,12 @@ CREATE TABLE IF NOT EXISTS `kelas` (
     `nama_kelas` VARCHAR(20) NOT NULL,
     `hari` VARCHAR(20),
     `jam` VARCHAR(30),
+    `jam_mulai` TIME NULL,
+    `jam_selesai` TIME NULL,
     `ruangan` VARCHAR(50),
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY `idx_kelas_angkatan` (`angkatan_id`),
+    KEY `idx_jadwal` (`semester_id`, `hari`, `jam_mulai`),
     FOREIGN KEY (`mata_kuliah_id`) REFERENCES `mata_kuliah`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`dosen_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
     FOREIGN KEY (`semester_id`) REFERENCES `semester`(`id`) ON DELETE CASCADE,
@@ -109,7 +110,7 @@ CREATE TABLE IF NOT EXISTS `materi` (
     `deskripsi` TEXT,
     `tipe` VARCHAR(20) NOT NULL DEFAULT 'PDF',
     `file_or_url` VARCHAR(255) NOT NULL,
-    `file_size` VARCHAR(50) DEFAULT '1.2 MB',
+    `file_size` VARCHAR(50) DEFAULT NULL,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (`kelas_id`) REFERENCES `kelas`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -134,7 +135,7 @@ CREATE TABLE IF NOT EXISTS `submissions` (
     `tugas_id` INT NOT NULL,
     `mahasiswa_id` INT NOT NULL,
     `file_nama` VARCHAR(255) NOT NULL,
-    `file_size` VARCHAR(50) DEFAULT '500 KB',
+    `file_size` VARCHAR(50) DEFAULT NULL,
     `file_path` LONGTEXT NULL,
     `catatan_mhs` TEXT,
     `submitted_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -176,16 +177,16 @@ INSERT INTO `semester` (`nama`, `is_aktif`) VALUES
 ('Genap 2024/2025', 0);
 
 -- Mata Kuliah Awal
-INSERT INTO `mata_kuliah` (`id`, `kode_mk`, `nama_mk`, `sks`, `semester_paket`, `target_angkatan`, `angkatan_id`, `deskripsi`) VALUES
-(1, 'TRPL101', 'Pemrograman Web Lanjut', 3, 3, 'Angkatan 2024 A', 1, 'Pengembangan aplikasi web berbasis arsitektur client-server dan framework.'),
-(2, 'TRPL102', 'Struktur Data & Algoritma', 3, 3, 'Angkatan 2024 B', 2, 'Analisis kompleksitas algoritma, struktur data linear dan non-linear.');
+INSERT INTO `mata_kuliah` (`id`, `kode_mk`, `nama_mk`, `sks`, `semester_paket`, `deskripsi`) VALUES
+(1, 'TRPL101', 'Pemrograman Web Lanjut', 3, 3, 'Pengembangan aplikasi web berbasis arsitektur client-server dan framework.'),
+(2, 'TRPL102', 'Struktur Data & Algoritma', 3, 3, 'Analisis kompleksitas algoritma, struktur data linear dan non-linear.');
 
 -- Rombel Kelas Perkuliahan (Pengelompokan Berdasarkan Angkatan)
-INSERT INTO `kelas` (`id`, `mata_kuliah_id`, `dosen_id`, `semester_id`, `nama_kelas`, `hari`, `jam`, `ruangan`) VALUES
-(1, 1, 3, 1, 'TRPL 24 A', 'Senin', '08:00 - 10:30', 'Lab Komputer 1'),
-(2, 2, 4, 1, 'TRPL 24 B', 'Selasa', '10:30 - 13:00', 'Lab Komputer 2'),
-(3, 1, 3, 1, 'TRPL 25 A', 'Rabu', '08:00 - 10:30', 'Lab RPL CWE'),
-(4, 2, 4, 1, 'TRPL 25 B', 'Kamis', '13:00 - 15:30', 'Ruang Teori 3');
+INSERT INTO `kelas` (`id`, `mata_kuliah_id`, `dosen_id`, `semester_id`, `nama_kelas`, `hari`, `jam`, `jam_mulai`, `jam_selesai`, `ruangan`) VALUES
+(1, 1, 3, 1, 'TRPL 24 A', 'Senin', '08:00 - 10:30', '08:00', '10:30', 'Lab Komputer 1'),
+(2, 2, 4, 1, 'TRPL 24 B', 'Selasa', '10:30 - 13:00', '10:30', '13:00', 'Lab Komputer 2'),
+(3, 1, 3, 1, 'TRPL 25 A', 'Rabu', '08:00 - 10:30', '08:00', '10:30', 'Lab RPL CWE'),
+(4, 2, 4, 1, 'TRPL 25 B', 'Kamis', '13:00 - 15:30', '13:00', '15:30', 'Ruang Teori 3');
 
 -- Data Enrolmen Mahasiswa ke Kelas Angkatan
 INSERT INTO `enrollments` (`kelas_id`, `mahasiswa_id`) VALUES
