@@ -22,14 +22,14 @@ function renderAdminSemesters() {
         </div>
 
         ${aktif ? `
-        <div class="bg-gradient-to-r from-maroon-600 to-blue-700 rounded-2xl p-5 text-white shadow flex items-center gap-4">
-            <div class="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center text-xl shrink-0">
+        <div class="bg-maroon-800 rounded-2xl p-5 text-white shadow flex items-center gap-4">
+            <div class="w-12 h-12 rounded-xl bg-white/10 flex items-center justify-center text-xl shrink-0">
                 <i class="fa-solid fa-calendar-check"></i>
             </div>
             <div>
                 <p class="text-xs font-semibold text-maroon-200 uppercase tracking-wider">Semester Aktif Saat Ini</p>
                 <h2 class="text-lg font-bold mt-0.5">${aktif.nama}</h2>
-                <p class="text-xs text-blue-200 mt-0.5">Dibuat: ${new Date(aktif.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                <p class="text-xs text-maroon-200 mt-0.5">Dibuat: ${new Date(aktif.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
             </div>
         </div>
         ` : `

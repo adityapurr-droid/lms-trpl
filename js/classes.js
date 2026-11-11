@@ -182,7 +182,7 @@ function renderAdminClasses() {
 
                         <!-- Action Buttons -->
                         <div class="px-5 py-3 bg-slate-50 border-t border-slate-100 flex gap-2">
-                            <button onclick="openModalManageAngkatanStudents(${ang.id})" class="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5">
+                            <button onclick="openModalManageAngkatanStudents(${ang.id})" class="flex-1 px-3 py-2 bg-maroon-600 hover:bg-maroon-700 text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5">
                                 <i class="fa-solid fa-user-plus"></i> Kelola Mahasiswa
                             </button>
                             <button onclick="openModalEditAngkatan(${ang.id})" class="px-3 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-semibold transition">

@@ -7,7 +7,6 @@
 // =============================================================
 
 function renderAdminUsers() {
-    console.log("Rendering users, appData.users length:", (appData.users || []).length);
     // 1. Filtering & Searching Pengguna
     let filteredUsers = appData.users.filter(u => {
         if (userFilter.search) {

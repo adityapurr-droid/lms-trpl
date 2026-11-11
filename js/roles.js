@@ -190,12 +190,12 @@ function renderDosenDashboard() {
             </span>
         </div>
 
-        <div class="bg-gradient-to-r from-blue-700 to-maroon-800 rounded-2xl p-6 text-white shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+        <div class="bg-gradient-to-r from-maroon-800 to-maroon-900 rounded-2xl p-6 text-white shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
             <div>
                 <h2 class="text-base font-bold">Kelola Penugasan & Penilaian Mahasiswa</h2>
-                <p class="text-xs text-blue-100 mt-1">Buat instrumen tugas baru dengan berkas soal lampiran, edit deadline, atau nilai hasil kiriman mahasiswa.</p>
+                <p class="text-xs text-maroon-100 mt-1">Buat instrumen tugas baru dengan berkas soal lampiran, edit deadline, atau nilai hasil kiriman mahasiswa.</p>
             </div>
-            <button onclick="setTab('assignments'); openModalAddTugas();" class="px-4 py-2.5 rounded-xl bg-white text-blue-800 font-bold text-xs hover:bg-blue-50 transition shadow shrink-0">
+            <button onclick="setTab('assignments'); openModalAddTugas();" class="px-4 py-2.5 rounded-xl bg-white text-maroon-800 font-bold text-xs hover:bg-maroon-50 transition shadow shrink-0">
                 <i class="fa-solid fa-plus mr-1"></i> Buat Tugas Baru
             </button>
         </div>
